@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Health Bridge Test</title>
+<style>
+  :root {
+    --bg:#fff; --ink:#1a1a1a; --quiet:#5f6368; --line:#d8dade;
+    --field:#f4f5f7; --go:#1f5fd0; --pass:#146c43; --fail:#a52833; --wait:#8a6d1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#16181c; --ink:#f0f1f3; --quiet:#a5a9b0; --line:#33373e;
+      --field:#22252b; --go:#6ea2f5; --pass:#5bc98a; --fail:#f08b95; --wait:#e0c168;
+    }
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:20px 18px 60px; background:var(--bg); color:var(--ink);
+    font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-text-size-adjust:100%;
+  }
+  .wrap { max-width:34rem; margin:0 auto; }
+  h1 { font-size:1.45rem; line-height:1.25; margin:0 0 6px; letter-spacing:-.01em; }
+  .sub { color:var(--quiet); margin:0 0 24px; font-size:.95rem; }
+  .mode {
+    display:inline-block; padding:5px 11px; border-radius:999px;
+    background:var(--field); font-size:.82rem; color:var(--quiet); margin-bottom:22px;
+  }
+  section { border-top:1px solid var(--line); padding:22px 0; }
+  h2 { font-size:1.02rem; margin:0 0 4px; display:flex; align-items:baseline; gap:9px; }
+  .step { color:var(--quiet); font-weight:400; font-size:.85rem; flex:none; }
+  .why { color:var(--quiet); font-size:.9rem; margin:0 0 16px; }
+  button {
+    width:100%; padding:15px 16px; font-size:1rem; font-weight:500; font-family:inherit;
+    color:#fff; background:var(--go); border:0; border-radius:11px; cursor:pointer;
+    -webkit-appearance:none;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) button { color:#10131a; }
+  }
+  button:active { opacity:.72; }
+  button:focus-visible { outline:3px solid var(--ink); outline-offset:2px; }
+  button.quiet { background:transparent; color:var(--go); border:1px solid var(--line); }
+  .out {
+    margin-top:14px; padding:13px 14px; background:var(--field); border-radius:10px;
+    font-size:.92rem; white-space:pre-wrap; word-break:break-word; display:none;
+  }
+  .out.show { display:block; }
+  .out b { display:block; margin-bottom:4px; }
+  .out.pass b { color:var(--pass); }
+  .out.fail b { color:var(--fail); }
+  .out.wait b { color:var(--wait); }
+  label { display:block; font-size:.9rem; margin:0 0 6px; color:var(--quiet); }
+  input {
+    width:100%; padding:12px 13px; font-size:1rem; font-family:inherit; color:var(--ink);
+    background:var(--field); border:1px solid var(--line); border-radius:10px;
+    margin-bottom:14px; -webkit-appearance:none;
+  }
+  .banner {
+    padding:16px; border-radius:12px; background:var(--field);
+    border-left:4px solid var(--pass); margin-bottom:24px; font-size:.95rem;
+  }
+  .banner.bad { border-left-color:var(--fail); }
+  .banner b { display:block; margin-bottom:6px; color:var(--pass); font-size:1.05rem; }
+  .banner.bad b { color:var(--fail); }
+  .code {
+    font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.78rem;
+    color:var(--quiet); word-break:break-all; line-height:1.5;
+    margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
+  }
+  footer {
+    border-top:1px solid var(--line); padding-top:20px; margin-top:10px;
+    color:var(--quiet); font-size:.86rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Health Bridge Test</h1>
+  <p class="sub">Checks whether this page can talk to Apple Health through Shortcuts.</p>
+  <div class="mode" id="mode">Checking…</div>
+
+  <div id="banner"></div>
+
+  <section>
+    <h2><span class="step">Test A</span> Round trip</h2>
+    <p class="why">Sends you to a shortcut and waits for a word to come back. No Health involved.</p>
+    <button onclick="fire('WT Test A','A')">Run Test A</button>
+    <div class="out" id="outA"></div>
+  </section>
+
+  <section>
+    <h2><span class="step">Test B</span> Read from Health</h2>
+    <p class="why">Asks Health for your most recent weight and brings the number back.</p>
+    <button onclick="fire('WT Read Weight','B')">Run Test B</button>
+    <div class="out" id="outB"></div>
+  </section>
+
+  <section>
+    <h2><span class="step">Test C</span> Write to Health</h2>
+    <p class="why">Sends a pretend workout to Health. Check the Health app afterwards.</p>
+    <label for="mins">Minutes</label>
+    <input id="mins" type="number" inputmode="numeric" value="30">
+    <label for="cals">Calories</label>
+    <input id="cals" type="number" inputmode="numeric" value="200">
+    <button onclick="logWorkout()">Run Test C</button>
+    <div class="out" id="outC"></div>
+  </section>
+
+  <section>
+    <h2><span class="step">Test D</span> Storage survival</h2>
+    <p class="why">Saves a date on this phone. Come back in ten days and press Check.</p>
+    <button onclick="saveStamp()">Save a date now</button>
+    <div style="height:10px"></div>
+    <button class="quiet" onclick="checkStamp()">Check saved date</button>
+    <div class="out" id="outD"></div>
+  </section>
+
+  <footer>Shortcut names must match exactly, including capital letters and spaces.</footer>
+
+</div>
+
+<script>
+(function () {
+  var standalone = window.navigator.standalone === true ||
+    window.matchMedia('(display-mode: standalone)').matches;
+  document.getElementById('mode').textContent =
+    standalone ? 'Opened from the Home Screen' : 'Opened in the browser';
+
+  // Callback address carries NO question mark of its own.
+  var base = location.origin + location.pathname;
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c];
+    });
+  }
+
+  // ---- Did we just come back from Shortcuts? ----
+  var rawQuery = location.search;
+  var pending = null;
+  try { pending = JSON.parse(localStorage.getItem('wt_pending') || 'null'); } catch (e) {}
+
+  var cameBack = pending && (Date.now() - pending.t < 300000);
+  if (pending) { try { localStorage.removeItem('wt_pending'); } catch (e) {} }
+
+  if (cameBack || rawQuery) {
+    var params = new URLSearchParams(rawQuery);
+    var value = params.get('result');
+
+    // Fallback: dig the text out even if the address came back scrambled.
+    if (value === null && rawQuery.indexOf('result') > -1) {
+      var m = rawQuery.match(/result=([^&?]*)/);
+      if (m) { value = m[1]; }
+    }
+
+    var b = document.getElementById('banner');
+
+    if (value !== null && value !== '') {
+      var shown;
+      try { shown = decodeURIComponent(value.replace(/\+/g, ' ')); }
+      catch (e) { shown = value; }
+      b.className = 'banner';
+      b.innerHTML = '<b>It came back</b>' + esc(shown) +
+        '<div class="code">Test ' + esc(pending ? pending.slot : '?') +
+        '<br>Address received:<br>' + esc(rawQuery || '(nothing after the address)') + '</div>';
+    } else {
+      b.className = 'banner bad';
+      b.innerHTML = '<b>Came back empty</b>The shortcut ran and returned here, but sent no text.' +
+        '<div class="code">Test ' + esc(pending ? pending.slot : '?') +
+        '<br>Address received:<br>' + esc(rawQuery || '(nothing after the address)') + '</div>';
+    }
+    history.replaceState(null, '', base);
+  }
+
+  // ---- Firing a shortcut ----
+  window.fire = function (name, slot, input) {
+    try {
+      localStorage.setItem('wt_pending', JSON.stringify({ slot: slot, t: Date.now() }));
+    } catch (e) {}
+
+    var url = 'shortcuts://x-callback-url/run-shortcut' +
+      '?name=' + encodeURIComponent(name) +
+      '&x-success=' + encodeURIComponent(base) +
+      '&x-cancel=' + encodeURIComponent(base) +
+      '&x-error=' + encodeURIComponent(base);
+
+    if (input !== undefined && input !== null) {
+      url += '&input=text&text=' + encodeURIComponent(input);
+    }
+
+    var out = document.getElementById('out' + slot);
+    out.className = 'out show wait';
+    out.innerHTML = '<b>Opening Shortcuts…</b>If nothing happens in a few seconds, the link did not fire.' +
+      '<div class="code">' + esc(url) + '</div>';
+
+    var left = false;
+    function mark() { if (document.hidden) { left = true; } }
+    document.addEventListener('visibilitychange', mark);
+
+    setTimeout(function () {
+      document.removeEventListener('visibilitychange', mark);
+      if (!left && !document.hidden) {
+        out.className = 'out show fail';
+        out.innerHTML = '<b>Nothing happened</b>Shortcuts did not open. Check the name matches exactly.';
+      }
+    }, 3000);
+
+    location.href = url;
+  };
+
+  window.logWorkout = function () {
+    var mins = document.getElementById('mins').value || '30';
+    var cals = document.getElementById('cals').value || '200';
+    fire('WT Log Workout', 'C', mins + ',' + cals);
+  };
+
+  window.saveStamp = function () {
+    var out = document.getElementById('outD');
+    try {
+      localStorage.setItem('wt_stamp', new Date().toISOString());
+      out.className = 'out show pass';
+      out.innerHTML = '<b>Saved</b>Come back in ten days and press Check.';
+    } catch (e) {
+      out.className = 'out show fail';
+      out.innerHTML = '<b>Could not save</b>Storage is blocked. Check Private Browsing is off.';
+    }
+  };
+
+  window.checkStamp = function () {
+    var out = document.getElementById('outD'), saved = null;
+    try { saved = localStorage.getItem('wt_stamp'); } catch (e) {}
+    if (!saved) {
+      out.className = 'out show fail';
+      out.innerHTML = '<b>Nothing saved</b>Either you have not saved one yet, or it was wiped.';
+      return;
+    }
+    var days = Math.floor((Date.now() - new Date(saved)) / 86400000);
+    out.className = 'out show pass';
+    out.innerHTML = '<b>Still here after ' + days + ' day' + (days === 1 ? '' : 's') + '</b>' +
+      'Saved ' + new Date(saved).toLocaleString();
+  };
+})();
+</script>
+</body>
+</html>
