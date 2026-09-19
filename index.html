@@ -58,6 +58,9 @@ p{margin:0 0 10px}
 .card.hero{padding:0;min-height:190px}
 .card.hero .heroArt{position:absolute;inset:0;pointer-events:none}
 .card.hero .heroArt::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(21,26,43,0) 25%,rgba(21,26,43,.92) 88%)}
+.card.hero.artRight .heroArt{left:38%;opacity:.8}
+.card.hero.artRight .heroArt::after{background:linear-gradient(100deg,rgba(21,26,43,.95) 8%,rgba(21,26,43,0) 55%,rgba(21,26,43,.6) 100%)}
+.card.hero.artRight .heroBody h1,.card.hero.artRight .heroBody .eyebrow{max-width:100%}
 .card.hero .heroBody{position:relative;padding:18px;display:flex;flex-direction:column;justify-content:flex-end;min-height:190px}
 .card.hero .heroBody h1,.card.hero .heroBody h2,.card.hero .heroBody .eyebrow,.card.hero .heroBody .small{max-width:68%}
 .card.hero .heroArt{opacity:.9}
@@ -260,6 +263,7 @@ function defaultState() {
     adjust: [],              // {date, kcal, note}
     intensity: 1.0,          // global multiplier from feedback
     lastAdjust: null,
+    scLinks: {}, scBuilt: {},
     shortcuts: { readWeight: 'WT Read Weight', logStrength: 'WT Log Strength', logCardio: 'WT Log Cardio', readiness: 'WT Readiness', logWeight: 'WT Log Weight' },
     flags: { calm: false, showCal: true, cycle28: false, pace: 'standard' },
     pending: null,
@@ -270,7 +274,7 @@ function defaultState() {
 }
 let S = load();
 function load() {
-  try { const raw = localStorage.getItem(KEY); if (raw) { const s = JSON.parse(raw); return Object.assign(defaultState(), s, { shortcuts: Object.assign(defaultState().shortcuts, s.shortcuts || {}), flags: Object.assign(defaultState().flags, s.flags || {}) }); } } catch (e) { console.warn('load failed', e); }
+  try { const raw = localStorage.getItem(KEY); if (raw) { const s = JSON.parse(raw); return Object.assign(defaultState(), s, { shortcuts: Object.assign(defaultState().shortcuts, s.shortcuts || {}), flags: Object.assign(defaultState().flags, s.flags || {}), scLinks: s.scLinks || {}, scBuilt: s.scBuilt || {} }); } } catch (e) { console.warn('load failed', e); }
   return defaultState();
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save. Storage may be full or blocked.'); } }
@@ -1233,10 +1237,10 @@ function route() {
   const hsh = location.hash || '#/today';
   document.body.dataset.goal = S.profile ? S.profile.goal : 'general';
   document.body.classList.toggle('calm', !!S.flags.calm);
-  if (!S.profile && !hsh.startsWith('#/onboard')) { location.hash = '#/onboard'; return; }
+  if (!S.profile && !hsh.startsWith('#/onboard') && !hsh.startsWith('#/invite')) { location.hash = '#/onboard'; return; }
   window.scrollTo(0, 0);
   const [_, page, arg] = hsh.split('/');
-  const views = { onboard: Onboard, today: Today, plan: Plan, progress: Progress, fuel: Fuel, more: More, session: Session, setup: Setup, library: Library, weigh: Weigh, history: History, profile: ProfileEdit };
+  const views = { onboard: Onboard, today: Today, plan: Plan, progress: Progress, fuel: Fuel, more: More, session: Session, setup: Setup, library: Library, invite: Invite, weigh: Weigh, history: History, profile: ProfileEdit };
   const v = views[page] || Today;
   app.innerHTML = v.render(arg);
   if (v.mount) v.mount(arg);
@@ -1720,7 +1724,7 @@ const More = {
     const f = S.flags;
     return h`<div class="fade"><div class="topbar"><h1>More</h1></div>
       <div class="stack">
-      <div class="card"><b>Apple Health setup</b><div class="mute small">Step-by-step guide for the Shortcuts this app uses.</div><div class="row mt"><button class="sm" onclick="go('#/setup')">Open guide</button></div></div>
+      <div class="card"><b>Apple Health setup</b><div class="mute small">${SC_ORDER.filter(k => S.scBuilt[k]).length}/5 shortcuts built${SC_ORDER.filter(k => S.scLinks[k]).length ? ' · ' + SC_ORDER.filter(k => S.scLinks[k]).length + '/5 shareable' : ''}</div><div class="row mt"><button class="sm" onclick="go('#/setup')">Open guide</button></div></div>
       <div class="card"><b>Exercise library</b><div class="mute small">Animated form guide for every movement, plus mobility and cardio.</div><div class="row mt"><button class="sm sec" onclick="go('#/library')">Browse</button></div></div>
       <div class="card"><b>Your profile</b><div class="mute small">Goal, days, equipment, target weight.</div><div class="row mt"><button class="sm sec" onclick="go('#/profile')">Edit</button></div></div>
       <div class="card"><b>Settings</b>
@@ -1790,44 +1794,137 @@ const Library = {
   showMob(id) { const m = MOBMAP[id]; sheet(`<h3>${esc(m.n)}</h3><div class="figbox mt">${Figure.svg('mob', id)}</div><p class="mt">${esc(m.cue)}</p><button class="ghost" onclick="closeSheet()">Close</button>`); }
 };
 
+const SC_STEPS = {
+  readWeight: { title: 'Read weight', why: 'Pulls your weigh-ins out of Health so the diet math works.', mins: 4, steps: [
+    'Shortcuts app → <b>+</b> → tap the name at top → <b>Rename</b> → paste the name above',
+    'Add Action → search <b>Find Health Samples</b> → tap it',
+    'Tap the sample type and choose <b>Weight</b>',
+    'Tap <b>Show More</b>. Sort by <b>Start Date</b>, Order <b>Latest First</b>, Limit <b>30</b>',
+    'Add Action → <b>Repeat with Each</b> (it picks up the samples automatically)',
+    'Inside the repeat: Add Action → <b>Text</b>',
+    'In the text box, insert the <b>Repeat Item</b> variable, tap it, choose <b>Start Date</b>. Tap it again → Date Format <b>Custom</b> → type <code>yyyy-MM-dd</code>',
+    'Type a comma, then insert <b>Repeat Item</b> again and choose <b>Value</b>',
+    'Below the repeat: Add Action → <b>Combine Text</b>, input <b>Repeat Results</b>, separator <b>New Lines</b>',
+    'Add Action → <b>Stop and Output</b>, output the <b>Combined Text</b>. Tap Done.'
+  ], note: 'The simple version from testing (one Find Health Samples, limit 1, then Text and Stop and Output) also works — the app just asks you for the date each time.' },
+  logStrength: { title: 'Log strength workout', why: 'Writes a finished session into Health.', mins: 4, steps: [
+    'New shortcut → Rename → paste the name above',
+    'Add Action → <b>Split Text</b>. Input: <b>Shortcut Input</b>. Separator: <b>Custom</b>, and type a single comma',
+    'Add Action → <b>Get Item from List</b> → <b>First Item</b> from Split Text',
+    'Add Action → <b>Get Item from List</b> → <b>Last Item</b> from Split Text',
+    'Add Action → <b>Log Workout</b>. Type: <b>Traditional Strength Training</b>',
+    'Duration: insert the <b>first item</b> variable, unit <b>minutes</b>',
+    'Calories: insert the <b>last item</b> variable',
+    'Leave <b>Distance empty</b> — a distance on a strength workout makes it fail. Tap Done.'
+  ], note: 'The app sends something like <code>42,210</code> meaning 42 minutes and 210 kcal.' },
+  logCardio: { title: 'Log cardio workout', why: 'Same, for cardio sessions.', mins: 1, steps: [
+    'Open <b>Log strength workout</b>, tap its name at the top, choose <b>Duplicate</b>',
+    'Rename the copy → paste the name above',
+    'Tap the <b>Log Workout</b> action and change the type to <b>Mixed Cardio</b>',
+    'Tap Done.'
+  ] },
+  readiness: { title: 'Readiness', why: 'Pulls HRV, resting heart rate and sleep each morning.', mins: 6, steps: [
+    'New shortcut → Rename → paste the name above',
+    'Add Action → <b>Find Health Samples</b>: type <b>Heart Rate Variability</b>, Show More → Start Date, Latest First, Limit <b>1</b>',
+    'Add Action → <b>Get Details of Health Sample</b> → <b>Value</b>. Tap the result variable → <b>Rename</b> → <code>HRV</code>',
+    'Repeat those two actions for <b>Resting Heart Rate</b>. Rename the result <code>RHR</code>',
+    'Optional sleep: Find Health Samples type <b>Sleep Analysis</b>, filter Start Date <b>is in the last 1 day</b>. Then <b>Get Details</b> → <b>Duration</b>, then <b>Calculate Statistics</b> → <b>Sum</b>. Rename it <code>SLEEP</code>',
+    'Add Action → <b>Text</b> and build: <code>hrv:[HRV] rhr:[RHR] sleep:[SLEEP]</code> using the renamed variables',
+    'Add Action → <b>Stop and Output</b> that Text. Tap Done.'
+  ], note: 'Sleep is the fiddly one. Skip it if it fights you — the app lets you type sleep hours by hand and still scores readiness.' },
+  logWeight: { title: 'Log weight', why: 'Writes a weigh-in from the app into Health.', mins: 2, steps: [
+    'New shortcut → Rename → paste the name above',
+    'Add Action → <b>Log Health Sample</b>',
+    'Type: <b>Weight</b>',
+    'Value: insert <b>Shortcut Input</b>',
+    'Unit: <b>' + (useLb() ? 'lb' : 'kg') + '</b>. Tap Done.'
+  ] }
+};
+const SC_ORDER = ['readWeight', 'logStrength', 'logCardio', 'readiness', 'logWeight'];
+
+function copyText(t, msg) {
+  const done = () => toast(msg || 'Copied');
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(done, () => fallback()); }
+  else fallback();
+  function fallback() {
+    const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { toast('Copy failed — select it by hand'); }
+    ta.remove();
+  }
+}
+function b64e(s) { return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function b64d(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return decodeURIComponent(escape(atob(s))); }
+
 const Setup = {
   render() {
-    const sc = S.shortcuts;
-    const step = (t, body) => `<details><summary>${t}</summary>${body}</details>`;
-    return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Health setup</h2><span></span></div>
-      <p class="mute small">Five small Shortcuts connect this app to Apple Health. Build each once. Names must match exactly — copy them from here.</p>
-      <div class="stack">
-      ${step('1 · <span class="kbd">' + esc(sc.readWeight) + '</span> — reads weight', `<ol class="ol small">
-        <li>Shortcuts app → <b>+</b> → rename to <span class="kbd">${esc(sc.readWeight)}</span></li>
-        <li>Add Action → <b>Find Health Samples</b>. Set type to <b>Weight</b>. Tap <b>Show More</b>: Sort by <b>Start Date</b>, Order <b>Latest First</b>, Limit <b>30</b>.</li>
-        <li>Add Action → <b>Repeat with Each</b> (it will use the samples).</li>
-        <li>Inside the repeat: Add Action → <b>Text</b>. In the box insert the <b>Repeat Item</b> variable twice, then tap each to pick a detail: first one <b>Start Date</b> (format it as <b>Custom</b> <span class="kbd">yyyy-MM-dd</span>), then a comma, then <b>Value</b>.</li>
-        <li>After the repeat: Add Action → <b>Combine Text</b>, Repeat Results, with <b>New Lines</b>.</li>
-        <li>Add Action → <b>Stop and Output</b> the Combined Text. Done.</li></ol>
-        <p class="mute tiny">Already built the single-weight version from testing? That works too — it just pulls one entry at a time.</p>`)}
-      ${step('2 · <span class="kbd">' + esc(sc.logStrength) + '</span> — logs a strength workout', `<ol class="ol small">
-        <li>New shortcut, rename to <span class="kbd">${esc(sc.logStrength)}</span></li>
-        <li>Add Action → <b>Split Text</b>. Input: <b>Shortcut Input</b>. Split by <b>Custom</b>, and type a comma <span class="kbd">,</span></li>
-        <li>Add Action → <b>Get Item from List</b>. Get <b>First Item</b> from Split Text.</li>
-        <li>Add Action → <b>Get Item from List</b>. Get <b>Last Item</b> from Split Text.</li>
-        <li>Add Action → <b>Log Workout</b>. Type <b>Traditional Strength Training</b>. Duration: insert the <b>first item</b> variable, unit minutes. Calories: insert the <b>last item</b> variable. Leave Distance empty.</li>
-        <li>Done. When the app sends <span class="kbd">42,210</span>, that logs 42 minutes and 210 kcal.</li></ol>`)}
-      ${step('3 · <span class="kbd">' + esc(sc.logCardio) + '</span> — logs a cardio workout', `<p class="small">Same as the strength one, but the Log Workout type is <b>Mixed Cardio</b>. Easiest: open <span class="kbd">${esc(sc.logStrength)}</span>, tap the name → <b>Duplicate</b>, rename it, and change the workout type.</p>`)}
-      ${step('4 · <span class="kbd">' + esc(sc.readiness) + '</span> — reads HRV, resting heart rate, sleep', `<ol class="ol small">
-        <li>New shortcut, rename to <span class="kbd">${esc(sc.readiness)}</span></li>
-        <li>Add Action → <b>Find Health Samples</b>: type <b>Heart Rate Variability</b>, sort Start Date, Latest First, Limit 1. Then Add Action → <b>Get Details of Health Sample</b> → <b>Value</b>. Rename this variable to <b>HRV</b> (tap the variable, Rename).</li>
-        <li>Repeat those two actions for <b>Resting Heart Rate</b>. Rename result <b>RHR</b>.</li>
-        <li>Optional, sleep: Find Health Samples type <b>Sleep Analysis</b>, filter <b>Value is Asleep</b> (or the Core/Deep/REM values), Start Date is in the last 1 day. Then <b>Get Details</b> → Duration, then <b>Calculate Statistics</b> → Sum. Rename <b>SLEEP</b>. (If this step is fiddly, skip it — the app lets you type sleep hours.)</li>
-        <li>Add Action → <b>Text</b>: <span class="kbd">hrv:[HRV] rhr:[RHR] sleep:[SLEEP]</span> using the variables.</li>
-        <li>Add Action → <b>Stop and Output</b> that Text. Done.</li></ol>
-        <p class="mute tiny">Sleep duration comes back in minutes or hours depending on the setting — the app handles both.</p>`)}
-      ${step('5 · <span class="kbd">' + esc(sc.logWeight) + '</span> — writes a weigh-in', `<ol class="ol small">
-        <li>New shortcut, rename to <span class="kbd">${esc(sc.logWeight)}</span></li>
-        <li>Add Action → <b>Log Health Sample</b>. Type <b>Weight</b>. Value: insert <b>Shortcut Input</b>. Unit: <b>${useLb() ? 'lb' : 'kg'}</b>.</li>
-        <li>Done.</li></ol>`)}
+    const done = SC_ORDER.filter(k => S.scBuilt[k]).length;
+    const linked = SC_ORDER.filter(k => S.scLinks[k]).length;
+    const mins = SC_ORDER.filter(k => !S.scBuilt[k]).reduce((n, k) => n + SC_STEPS[k].mins, 0);
+    return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Health setup</h2><span class="pill ${done === 5 ? 'on' : ''}">${done}/5</span></div>
+      <div class="card"><div class="bar mb"><i style="width:${done / 5 * 100}%"></i></div>
+      ${done === 5 ? `<b class="good">All five built.</b><div class="mute small">Apple Health is fully connected. Scroll down to share them with friends.</div>`
+        : `<b>About ${mins} minutes of tapping, once.</b><div class="mute small">Five small shortcuts. Build them in order — the third is a duplicate of the second, so it takes seconds.</div>`}</div>
+      <div class="card mt"><b>Why you build these yourself</b><div class="mute small">Apple requires shortcut files to be signed by their own tooling, so nobody can hand you a ready-made file. Once you've built them, sharing works fine — that's the bit Apple does allow.</div></div>
+      <div class="stack mt2">${SC_ORDER.map((k, i) => {
+        const sc = SC_STEPS[k], name = S.shortcuts[k], built = S.scBuilt[k];
+        return `<div class="card" style="${built ? 'border-color:color-mix(in srgb,var(--good) 45%,transparent)' : ''}">
+          <div class="between"><div><div class="eyebrow">Shortcut ${i + 1} · about ${sc.mins} min</div><h3>${esc(sc.title)} ${built ? '<span class="tag good">built</span>' : ''}</h3><div class="mute small">${esc(sc.why)}</div></div></div>
+          <div class="item mt" style="background:var(--field)"><div class="grow"><div class="tiny dim">name it exactly</div><div class="num" style="font-weight:700">${esc(name)}</div></div><button class="icon" onclick="copyText(${JSON.stringify(name).replace(/"/g, '&quot;')},'Name copied')">Copy</button></div>
+          <details class="mt"><summary>${built ? 'Steps again' : 'Show the steps'}</summary>
+            <ol class="ol small">${sc.steps.map(s => `<li>${s}</li>`).join('')}</ol>
+            ${sc.note ? `<div class="mute tiny">${sc.note}</div>` : ''}
+          </details>
+          <div class="grid2 mt"><button class="sm sec" onclick="Setup.test('${k}')">Test it</button><button class="sm ${built ? 'ghost' : ''}" onclick="Setup.toggle('${k}')">${built ? 'Mark not built' : 'Mark built'}</button></div>
+          <label class="mt">iCloud link (for sharing — optional)</label>
+          <div class="row"><input placeholder="Paste from Shortcuts → Share" value="${esc(S.scLinks[k] || '')}" oninput="S.scLinks['${k}']=this.value.trim();save()"><button class="icon" onclick="Setup.howShare()">?</button></div>
+        </div>`;
+      }).join('')}</div>
+      <div class="card mt2"><b>Share with friends</b>
+        <div class="mute small">Open each shortcut → <b>Share</b> → <b>Copy iCloud Link</b> → paste it above. Apple signs it, so your friends install with one tap.</div>
+        <div class="mt"><div class="bar"><i style="width:${linked / 5 * 100}%"></i></div><div class="mute tiny mt">${linked}/5 links saved</div></div>
+        ${linked ? `<div class="stack mt"><button onclick="Setup.invite()">Create invite link</button></div><div class="mute tiny mt">One link that gives a friend the app <i>and</i> one-tap installs for every shortcut you've linked.</div>` : `<div class="mute tiny mt">Add at least one link to create an invite.</div>`}
       </div>
-      <div class="card mt"><b>Common problems</b><ul class="ol small mute"><li>Wrong sample type is the #1 mistake. Open the action and read the type back.</li><li>Names are case-sensitive. <span class="kbd">WT Read Weight</span> ≠ <span class="kbd">wt read weight</span>.</li><li>First run asks for Health permission per data type. Allow it.</li><li>Nothing comes back: run the shortcut with its ▶ button inside Shortcuts first. If it errors there, the problem is in the shortcut, not the app.</li></ul></div>
-      <div class="stack mt2"><button class="sec" onclick="Bridge.run('readWeight')">Test: pull weight now</button></div></div>`;
+      <div class="card mt"><b>When something misbehaves</b><ul class="ol small mute">
+        <li>Wrong sample type is the most common mistake. Open the action and read the type back.</li>
+        <li>Names are case-sensitive. Use the Copy button rather than typing.</li>
+        <li>First run asks Health permission per data type. Allow it.</li>
+        <li>Nothing comes back? Run the shortcut with its ▶ button inside Shortcuts. If it errors there, the problem is in the shortcut, not the app.</li>
+        <li>A distance value on a strength workout makes Log Workout fail.</li>
+      </ul></div>
+      <div style="height:16px"></div></div>`;
+  },
+  toggle(k) { S.scBuilt[k] = !S.scBuilt[k]; save(); route(); },
+  test(k) { if (!S.shortcuts[k]) { toast('Set a name first'); return; } Bridge.run(k, k === 'logStrength' || k === 'logCardio' ? '20,120' : k === 'logWeight' ? fmtWn(curWeightKg() || 75, 1) : null, { test: true }); },
+  howShare() { sheet(`<h3>Getting the iCloud link</h3><ol class="ol small"><li>Open the <b>Shortcuts</b> app</li><li>Tap the <b>…</b> on the shortcut to open it</li><li>Tap the <b>share</b> icon</li><li>Tap <b>Copy iCloud Link</b>, then <b>Copy Link</b></li><li>Come back here and paste it in</li></ol><p class="mute small">If you don't see a Share button: Settings → Shortcuts → turn on <b>Allow Untrusted Shortcuts</b>. You may need to run any shortcut once before that option appears.</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
+  invite() {
+    const payload = { n: {}, l: {} };
+    SC_ORDER.forEach(k => { if (S.scLinks[k]) { payload.n[k] = S.shortcuts[k]; payload.l[k] = S.scLinks[k]; } });
+    payload.by = (S.profile && S.profile.name) || '';
+    const url = BASE + '#/invite/' + b64e(JSON.stringify(payload));
+    sheet(`<h3>Invite link</h3><p class="mute small">Send this to a friend. It opens the app on their phone and offers one-tap install for each shortcut you linked.</p>
+      <div class="item mt" style="background:var(--field)"><div class="grow tiny" style="word-break:break-all">${esc(url)}</div></div>
+      <div class="stack mt2"><button onclick="copyText(${JSON.stringify(url).replace(/"/g, '&quot;')},'Invite link copied')">Copy link</button><button class="ghost" onclick="closeSheet()">Close</button></div>
+      <p class="mute tiny mt">Their workout data stays on their own phone. Nothing is shared but the shortcut links.</p>`);
+  }
+};
+
+const Invite = {
+  render(data) {
+    let p = null;
+    try { p = JSON.parse(b64d(data || '')); } catch (e) { }
+    if (!p || !p.l || !Object.keys(p.l).length) return `<div class="fade"><h2>Invite link didn't work</h2><p class="mute">That link looks incomplete. Ask for a fresh one.</p><button onclick="go('#/today')">Continue to the app</button></div>`;
+    const keys = SC_ORDER.filter(k => p.l[k]);
+    return h`<div class="fade"><div class="card hero glow artRight" style="min-height:190px"><div class="heroArt">${Art.rocket(false)}</div><div class="heroBody"><div class="eyebrow">${p.by ? esc(p.by) + ' shared these with you' : 'Shared with you'}</div><h1>Connect<br>Apple Health</h1></div></div>
+      <p class="mute small mt">Tap each one, then tap <b>Get Shortcut</b> on the page that opens. They let this app read and write your Health data. Nothing leaves your phone.</p>
+      <div class="stack mt">${keys.map((k, i) => `<div class="item"><div class="tag acc">${i + 1}</div><div class="grow"><div class="title">${esc(SC_STEPS[k].title)}</div><div class="sub">${esc(p.n[k])}</div></div><a href="${esc(p.l[k])}" target="_blank" rel="noopener"><button class="sm">Install</button></a></div>`).join('')}</div>
+      <div class="card mt2"><b>If a link says it can't be added</b><div class="mute small">Settings → Shortcuts → turn on <b>Allow Untrusted Shortcuts</b>. You may need to run any shortcut once before that switch appears.</div></div>
+      <div class="stack mt2"><button onclick="Invite.accept('${esc(data)}')">Done — set up my plan</button></div>
+      <p class="mute tiny mt">Your workouts, weight and plan stay on this phone only.</p></div>`;
+  },
+  accept(data) {
+    try { const p = JSON.parse(b64d(data)); Object.keys(p.n || {}).forEach(k => { S.shortcuts[k] = p.n[k]; S.scLinks[k] = p.l[k]; S.scBuilt[k] = true; }); save(); } catch (e) { }
+    go(S.profile ? '#/today' : '#/onboard');
   }
 };
 
