@@ -221,6 +221,17 @@ details summary{cursor:pointer;font-weight:600;list-style:none}
 details summary::-webkit-details-marker{display:none}
 details[open] summary{margin-bottom:8px}
 a{color:var(--acc)}
+
+/* interval cue flash */
+.cue{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 70px);transform:translate(-50%,-20px) scale(.92);opacity:0;pointer-events:none;z-index:90;
+  min-width:62%;max-width:92%;padding:14px 22px;border-radius:22px;text-align:center;background:var(--acc);color:#07120f;box-shadow:0 12px 40px rgba(0,0,0,.45);transition:opacity .22s,transform .28s cubic-bezier(.2,1.4,.4,1)}
+.cue.show{opacity:1;transform:translate(-50%,0) scale(1)}
+.cue.hot{background:#ff6b5b;color:#1a0503}.cue.warn{background:var(--gold,#ffd166);color:#1d1400}
+.cueT{font-size:34px;font-weight:800;letter-spacing:.02em;line-height:1.05}.cueS{font-size:17px;font-weight:600;opacity:.85;margin-top:2px}
+body.calm .cue{transition:none}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.nextline{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 2px -4px;font-size:14px;color:var(--mute)}
+.nextline button{width:auto;flex:none}
 </style>
 </head>
 <body data-goal="general">
@@ -271,11 +282,12 @@ function defaultState() {
     lastAdjust: null,
     scLinks: {}, scBuilt: {},
     shortcuts: { readWeight: 'WT Read Weight', logStrength: 'WT Log Strength', logCardio: 'WT Log Cardio', readiness: 'WT Readiness', logWeight: 'WT Log Weight' },
-    flags: { calm: false, showCal: true, cycle28: false, pace: 'standard' },
+    flags: { calm: false, showCal: true, cycle28: false, pace: 'standard', mute: false },
     pending: null,
     active: null,            // in-progress session
     swaps: {},               // dayIdx-slot -> exId
-    seen: { onboardedAt: null, tipsDismissed: [] }
+    seen: { onboardedAt: null, tipsDismissed: [], lenDismissed: null },
+    pace: null
   };
 }
 let S = load();
@@ -446,6 +458,7 @@ const TYPE_INFO = {
 
 function availEquip(p) {
   const set = new Set(['bw', 'outdoor']);
+  if (p.setting === 'home_none') return set;   // "Home + no gear" is bodyweight only, whatever is ticked
   if (p.setting === 'gym') ['db', 'kb', 'bb', 'band', 'bar', 'bench', 'cable', 'machine', 'treadmill', 'bike', 'rower', 'elliptical', 'rope'].forEach(k => set.add(k));  // a gym does not give you a mountain bike
   (p.equipment || []).forEach(k => set.add(k));
   return set;
@@ -483,7 +496,9 @@ function buildStrength(type, p, dayIdx) {
   const pats = PATTERNS[type];
   const warm = p.goal === 'flex' ? 10 : 6;
   const cardioTail = type === 'H' ? Math.min(15, Math.round(p.minutes * 0.3)) : 0;
-  const perEx = p.minutes < 30 ? 6 : p.minutes >= 45 ? 7 : 8;
+  // minutes per set (work + rest) is learned from your own ticks; 2.3 until there's data
+  const perSet = clamp((S.pace && S.pace.minPerSet) || 2.3, 1.2, 5);
+  const perEx = (p.minutes < 30 ? 2 : 3) * perSet + 0.6;
   const slots = clamp(Math.floor((p.minutes - warm - cardioTail) / perEx), 2, pats.length);
   const used = new Set(); const list = [];
   for (let i = 0; i < pats.length && list.length < slots; i++) {
@@ -583,7 +598,7 @@ function buildProgram() {
   const mtbDays = new Set(p.mtbDays || []);
   const week = days.map((d, i) => {
     let code = codes[i];
-    if (mtbDays.has(d)) code = 'MTB';
+    if (mtbDays.has(d) && availEquip(p).has('mtb')) code = 'MTB';
     const s = buildOne(code, p, i, null);
     s.day = d; s.idx = i;
     return s;
@@ -1002,6 +1017,37 @@ function pol(p, a, l) { const r = a * Math.PI / 180; return [p[0] + Math.cos(r) 
 function lerpA(a, b, t) { let d = b - a; while (d > 180) d -= 360; while (d < -180) d += 360; return a + d * t; }
 function ease(t) { return t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
 
+const DEG = 180 / Math.PI;
+function normA(x) { return ((x + 180) % 360 + 360) % 360 - 180; }
+/* two-bone IK. sgn +1 = arm (elbow flex = upper - fore > 0), -1 = leg (knee flex = shin - thigh > 0).
+   Of the two geometric solutions it always keeps the one that bends the natural way. */
+function solve2(root, T, L1, L2, sgn) {
+  const dx = T[0] - root[0], dy = T[1] - root[1];
+  let d = Math.hypot(dx, dy);
+  d = Math.max(Math.abs(L1 - L2) + 0.5, Math.min(L1 + L2 - 0.01, d));
+  const phi = Math.atan2(dy, dx) * DEG;
+  const al = Math.acos(Math.max(-1, Math.min(1, (L1 * L1 + d * d - L2 * L2) / (2 * L1 * d)))) * DEG;
+  let best = null;
+  for (const s of [-1, 1]) {
+    const a = phi + s * al, e = pol(root, a, L1);
+    const b = Math.atan2(T[1] - e[1], T[0] - e[0]) * DEG;
+    const flex = sgn * normA(a - b);
+    if (!best || flex > best.flex) best = { a, b, flex };
+  }
+  return best;
+}
+function resolveIK(p) {
+  if (!p.ik) return p;
+  const q = Object.assign({}, p);
+  const pel = [q.px, q.py], sho = pol(pel, q.tor, LEN.torso);
+  const rel = r => r && [sho[0] + r[0], sho[1] + r[1]];
+  const arm = (T, ka, kf) => { if (!T) return; const r = solve2(sho, T, LEN.ua, LEN.fa, 1); q[ka] = r.a; q[kf] = r.b; };
+  const leg = (T, kt, ks) => { if (!T) return; const r = solve2(pel, T, LEN.th, LEN.sh, -1); q[kt] = r.a; q[ks] = r.b; };
+  arm(q.H || rel(q.Hs), 'ua', 'fa'); arm(q.H2 || rel(q.H2s), 'ua2', 'fa2');
+  leg(q.F, 'th', 'sh'); leg(q.F2, 'th2', 'sh2');
+  q.anchor = 'py'; q.dx = q.px - CX;
+  return q;
+}
 function skeleton(p) {
   const pel = [0, 0];
   const sho = pol(pel, p.tor, LEN.torso);
@@ -1013,6 +1059,7 @@ function skeleton(p) {
   return { pel, sho, hed, elb, han, elb2, han2, kne, ank, toe, kne2, ank2, toe2 };
 }
 function place(p) {
+  p = resolveIK(p);
   const s = skeleton(p);
   let dx = CX + (p.dx || 0), dy;
   const anchor = p.anchor || 'feet';
@@ -1020,31 +1067,36 @@ function place(p) {
   else if (anchor === 'py') dy = (p.py != null ? p.py : GROUND - 40);
   else dy = GROUND - Math.max(s.ank[1], s.ank2[1], s.toe[1], s.toe2[1]);
   const out = {}; for (const k in s) out[k] = [s[k][0] + dx, s[k][1] + dy];
-  // safety: keep the whole figure inside the canvas and above the floor
-  const pts = Object.values(out);
-  const pad = LEN.head + 3;
-  let lo = Math.min(...pts.map(q => q[1])) - pad, hi = Math.max(...pts.map(q => q[1])) + 4;
-  let sx = 0, sy = 0;
-  if (hi > GROUND + 4) sy -= hi - (GROUND + 4);
-  if (lo + sy < 4) sy += 4 - (lo + sy);
-  let lx = Math.min(...pts.map(q => q[0])) - pad, rx = Math.max(...pts.map(q => q[0])) + pad;
-  if (rx > 196) sx -= rx - 196;
-  if (lx + sx < 4) sx += 4 - (lx + sx);
-  if (sx || sy) for (const k in out) out[k] = [out[k][0] + sx, out[k][1] + sy];
+  if (!p.ik) {
+    // older angle-only poses: keep inside the canvas and above the floor
+    const pts = Object.values(out), pad = LEN.head + 3;
+    const lo = Math.min(...pts.map(q => q[1])) - pad, hi = Math.max(...pts.map(q => q[1])) + 4;
+    let sx = 0, sy = 0;
+    if (hi > GROUND + 4) sy -= hi - (GROUND + 4);
+    if (lo + sy < 4) sy += 4 - (lo + sy);
+    const lx = Math.min(...pts.map(q => q[0])) - pad, rx = Math.max(...pts.map(q => q[0])) + pad;
+    if (rx > 196) sx -= rx - 196;
+    if (lx + sx < 4) sx += 4 - (lx + sx);
+    if (sx || sy) for (const k in out) out[k] = [out[k][0] + sx, out[k][1] + sy];
+  }
   out._p = p;
   return out;
 }
+const LINEAR = new Set(['dx', 'px', 'py', 'seat', 'lift', 'handY', 'y', 'ropeY', 'ropeX']);
 function mixPose(a, b, t) {
   const o = {}; const keys = new Set(Object.keys(a).concat(Object.keys(b)));
   keys.forEach(k => {
-    if (k === 'anchor' || k === 'prop' || k === 'note') { o[k] = (t < .5 ? a[k] : b[k]) ?? a[k] ?? b[k]; return; }
     const av = a[k], bv = b[k];
-    if (typeof av === 'number' && typeof bv === 'number') o[k] = k === 'dx' || k === 'seat' || k === 'lift' || k === 'handY' || k === 'y' ? av + (bv - av) * t : lerpA(av, bv, t);
-    else o[k] = av != null ? av : bv;
+    if (Array.isArray(av) || Array.isArray(bv)) {           // IK targets: only when both frames pin the limb
+      if (Array.isArray(av) && Array.isArray(bv)) o[k] = [av[0] + (bv[0] - av[0]) * t, av[1] + (bv[1] - av[1]) * t];
+      return;
+    }
+    if (typeof av === 'number' && typeof bv === 'number') o[k] = LINEAR.has(k) ? av + (bv - av) * t : lerpA(av, bv, t);
+    else if (typeof av === 'number' || typeof bv === 'number') o[k] = av != null ? av : bv;
+    else o[k] = (t < .5 ? av : bv) ?? av ?? bv;
   });
   return o;
 }
-
 /* ---------- pose vocabulary ---------- */
 const STAND = { tor: -90, ua: 90, fa: 90, th: 90, sh: 90, ft: 0, th2: 88, sh2: 92, ua2: 94, fa2: 94 };
 const P = (o) => Object.assign({}, STAND, o);
@@ -1153,6 +1205,27 @@ function animFor(kind, id) {
 
 /* ---------- props ---------- */
 function propSvg(type, s) {
+  const plateAt = (c, r) => `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="${r}" fill="#8c93ab" stroke="#5d6380" stroke-width="2"/><circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="${(r * .28).toFixed(1)}" fill="#3a4058"/>`;
+  const tr = (s._p && s._p.tor != null) ? s._p.tor : -90;
+  switch (type) {
+    case 'bb': return plateAt([(s.han[0] + s.han2[0]) / 2, (s.han[1] + s.han2[1]) / 2], 15);
+    case 'bbBack': return plateAt(pol(pol(s.sho, tr - 90, 7), tr, 2), 15);
+    case 'bbFront': return plateAt(pol(s.sho, tr + 90, 9), 15);
+    case 'bbHip': return plateAt(pol(s.pel, tr + 90, 13), 15);
+    case 'db': return `${plateAt(s.han2, 6)}${plateAt(s.han, 6.5)}`;
+    case 'dbOne': return plateAt(s.han, 6.5);
+    case 'dbSmall': return `${plateAt(s.han2, 5)}${plateAt(s.han, 5)}`;
+    case 'barHigh': return `<line x1="${(s.han[0] - 30).toFixed(1)}" y1="${(s.han[1] - 2).toFixed(1)}" x2="${(s.han[0] + 30).toFixed(1)}" y2="${(s.han[1] - 2).toFixed(1)}" stroke="#6a7089" stroke-width="2" opacity=".35"/><circle cx="${s.han[0].toFixed(1)}" cy="${s.han[1].toFixed(1)}" r="4" fill="#8c93ab"/>`;
+    case 'handle': return `<rect x="${(s.han[0] - 3).toFixed(1)}" y="${(s.han[1] - 8).toFixed(1)}" width="6" height="16" rx="3" fill="#8c93ab"/>`;
+    case 'plate': { const c = [(s.ank[0] + s.ank2[0]) / 2, (s.ank[1] + s.ank2[1]) / 2], ft = s._p.ft, n = pol(c, ft + 90, -7), a = pol(n, ft, 20), b = pol(n, ft, -14);
+      return `<line x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" stroke="#8c93ab" stroke-width="7" stroke-linecap="round"/>`; }
+    case 'rope': { const ry = s._p.ropeY != null ? s._p.ropeY : GROUND + 12, rx = s._p.ropeX != null ? s._p.ropeX : (s.han[0] + s.han2[0]) / 2 + 2;
+      const cy = 2 * ry - (s.han[1] + s.han2[1]) / 2, cx = 2 * rx - (s.han[0] + s.han2[0]) / 2;
+      return `<path d="M${s.han[0].toFixed(1)} ${s.han[1].toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${s.han2[0].toFixed(1)} ${s.han2[1].toFixed(1)}" fill="none" stroke="var(--acc)" stroke-width="2.2"/>`; }
+  }
+  return propSvgOld(type, s);
+}
+function propSvgOld(type, s) {
   const han = s.han, han2 = s.han2, mid = [(han[0] + han2[0]) / 2, (han[1] + han2[1]) / 2];
   const A = 'var(--acc)', M = '#8c93ab', D = '#6a7089';
   const plate = (x, y, r) => `<rect x="${x - 4}" y="${y - r}" width="8" height="${r * 2}" rx="3" fill="${M}"/>`;
@@ -1200,25 +1273,103 @@ function propSvg(type, s) {
   }
 }
 
+/* ---------- facing: eye and nose on the front of the head ---------- */
+function faceSvg(s) {
+  const p = s._p || {};
+  const up = (p.nek != null ? p.nek : p.tor);
+  const front = up + 90;
+  const eye = pol(pol(s.hed, front, 5), up, 2.5);
+  const nose = pol(pol(s.hed, front, LEN.head - 1), up, -1);
+  return `<circle cx="${eye[0].toFixed(1)}" cy="${eye[1].toFixed(1)}" r="1.9" fill="#1a1f33"/><circle cx="${nose[0].toFixed(1)}" cy="${nose[1].toFixed(1)}" r="2.6" fill="#cfd4e4"/>`;
+}
+
+/* ---------- scenery at fixed world positions ---------- */
+const SCENE_BOX = {
+  benchFlat: [34, 140, 130, 176], benchInc: [60, 90, 150, 176], seatBack: [70, 70, 130, 176], seatPad: [70, 2, 140, 176],
+  cableColR: [60, 18, 172, 176], cableColMid: [60, 50, 172, 176], cableLowR: [40, 100, 176, 176], bandAnchorR: [60, 60, 168, 176],
+  bandAnchorL: [30, 60, 140, 176], bandAnchorHigh: [80, 4, 150, 176], postBehind: [80, 70, 110, 176], tableBar: [10, 96, 70, 176],
+  hipBench: [10, 138, 64, 176], boxW: [104, 146, 156, 176], benchBehindW: [20, 140, 72, 176], benchLowR: [116, 138, 170, 176],
+  legpressW: [30, 60, 140, 176], rowerW: [24, 118, 188, 176], bikeW: [38, 80, 172, 176], mtbW: [26, 82, 186, 180],
+  ellipW: [60, 70, 150, 176], ghdW: [28, 96, 130, 176], wallL: [26, 20, 40, 176], wallR: [154, 20, 168, 176], wallBehind: [60, 20, 140, 176]
+};
+function sceneSvg(n, s) {
+  if (!n) return '';
+  const D = '#6a7089', M = '#8c93ab', A = 'var(--acc)', G = GROUND;
+  const slab = (x0, x1, y, h) => `<rect x="${x0}" y="${y}" width="${x1 - x0}" height="${h || 8}" rx="3" fill="${D}"/>`;
+  const post = (x, y0, y1, w) => `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1 == null ? G : y1}" stroke="${D}" stroke-width="${w || 3}" stroke-linecap="round"/>`;
+  const cable = (p, q, w) => `<line x1="${p[0]}" y1="${p[1]}" x2="${q[0].toFixed(1)}" y2="${q[1].toFixed(1)}" stroke="${A}" stroke-width="${w || 2}" opacity=".9"/>`;
+  const H = [(s.han[0] + s.han2[0]) / 2, (s.han[1] + s.han2[1]) / 2];
+  const P = s.pel, tr = s._p.tor;
+  switch (n) {
+    case 'benchFlat': return slab(38, 126, 150) + post(50, 158) + post(114, 158);
+    case 'benchInc': { const b0 = pol(P, tr - 90, 8), b1 = pol(pol(s.sho, tr - 90, 8), tr, 12);
+      return `<line x1="${b0[0].toFixed(1)}" y1="${b0[1].toFixed(1)}" x2="${b1[0].toFixed(1)}" y2="${b1[1].toFixed(1)}" stroke="${D}" stroke-width="8" stroke-linecap="round"/>` + slab(P[0] - 12, P[0] + 22, P[1] + 6) + post(P[0] + 4, P[1] + 14) + post(b0[0] - 10, P[1] + 6); }
+    case 'seatBack': return slab(P[0] - 20, P[0] + 18, P[1] + 6) + post(P[0] - 13, P[1] + 6, P[1] - 46, 7) + post(P[0] - 2, P[1] + 14);
+    case 'seatPad': return slab(P[0] - 18, P[0] + 18, P[1] + 6) + post(P[0], P[1] + 14) + slab(P[0] + 22, P[0] + 42, P[1] - 14, 7) + post(132, 4, G, 4) + `<line x1="132" y1="6" x2="104" y2="6" stroke="${D}" stroke-width="4"/>` + cable([104, 8], H) + `<line x1="${(H[0] - 3).toFixed(1)}" y1="${H[1].toFixed(1)}" x2="${(H[0] + 3).toFixed(1)}" y2="${H[1].toFixed(1)}" stroke="${M}" stroke-width="6" stroke-linecap="round"/>`;
+    case 'cableColR': return post(160, 22, G, 6) + `<circle cx="154" cy="26" r="4" fill="${M}"/>` + cable([154, 26], H);
+    case 'cableColMid': return post(166, 54, G, 6) + `<circle cx="160" cy="68" r="4" fill="${M}"/>` + cable([160, 68], H);
+    case 'cableLowR': return post(170, 104, G, 6) + `<circle cx="164" cy="124" r="4" fill="${M}"/>` + cable([164, 124], H) + slab(P[0] - 22, P[0] + 16, P[1] + 5, 21) + post(142, 136, G, 4);
+    case 'bandAnchorR': return post(164, 64, G, 5) + cable([162, 88], H, 2.4);
+    case 'bandAnchorL': return post(34, 64, G, 5) + cable([36, 88], H, 2.4);
+    case 'bandAnchorHigh': return `<line x1="104" y1="8" x2="148" y2="8" stroke="${D}" stroke-width="5" stroke-linecap="round"/>` + cable([136, 10], H, 2.4);
+    case 'postBehind': return `<g opacity=".45">${post(94, 74, G, 6)}</g>` + cable([94, 90], H, 2.4);
+    case 'tableBar': return slab(14, 66, 100, 6) + post(22, 106) + post(58, 106);
+    case 'hipBench': return slab(14, 60, 144) + post(24, 152) + post(52, 152);
+    case 'boxW': return `<rect x="108" y="150" width="44" height="26" rx="3" fill="none" stroke="${D}" stroke-width="3"/>`;
+    case 'benchBehindW': return slab(24, 68, 146) + post(32, 154) + post(62, 154);
+    case 'benchLowR': return slab(120, 168, 142) + post(128, 150) + post(162, 150);
+    case 'legpressW': { const b0 = pol(P, tr - 90, 8), b1 = pol(pol(s.sho, tr - 90, 8), tr, 10);
+      return `<line x1="${b0[0].toFixed(1)}" y1="${b0[1].toFixed(1)}" x2="${b1[0].toFixed(1)}" y2="${b1[1].toFixed(1)}" stroke="${D}" stroke-width="8" stroke-linecap="round"/>` + slab(P[0] - 16, P[0] + 16, P[1] + 6) + post(P[0], P[1] + 14) +
+        `<line x1="98" y1="66" x2="136" y2="150" stroke="${D}" stroke-width="3" opacity=".6"/><line x1="128" y1="150" x2="140" y2="176" stroke="${D}" stroke-width="3"/>`; }
+    case 'rowerW': return `<line x1="26" y1="164" x2="160" y2="164" stroke="${D}" stroke-width="4" stroke-linecap="round"/>` + post(40, 164) + post(150, 164) +
+      `<circle cx="172" cy="142" r="15" fill="none" stroke="${D}" stroke-width="4"/>` + post(172, 157, G, 5) + slab(P[0] - 12, P[0] + 12, P[1] + 5, 7) +
+      `<line x1="150" y1="160" x2="158" y2="140" stroke="${M}" stroke-width="5" stroke-linecap="round"/>` + cable([172, 142], H, 1.6);
+    case 'bikeW': return `<line x1="44" y1="174" x2="162" y2="174" stroke="${D}" stroke-width="5" stroke-linecap="round"/><circle cx="150" cy="152" r="16" fill="none" stroke="${D}" stroke-width="4"/>` +
+      `<g stroke="${D}" stroke-width="4" stroke-linecap="round" fill="none"><path d="M104 152 L88 112 M104 152 L150 152 M104 152 L128 100 L140 90 M60 174 L104 152"/></g>` +
+      `<rect x="78" y="108" width="22" height="6" rx="3" fill="${M}"/><circle cx="104" cy="152" r="4" fill="${A}"/>`;
+    case 'mtbW': { const knob = (cx) => `<circle cx="${cx}" cy="152" r="22" fill="none" stroke="${D}" stroke-width="4.5"/><circle cx="${cx}" cy="152" r="17" fill="none" stroke="${M}" stroke-width="1.5" stroke-dasharray="3 4"/>`;
+      return `<path d="M4 176 q26 -8 52 -2 t54 3 t50 -6 t54 1" fill="none" stroke="var(--line)" stroke-width="3" stroke-linecap="round"/>` + knob(56) + knob(156) +
+        `<g stroke="${D}" stroke-width="4" stroke-linecap="round" fill="none"><path d="M56 152 L106 150 L92 106 M106 150 L146 96 M92 106 L146 96 M146 96 L156 152"/></g>` +
+        `<rect x="82" y="102" width="22" height="6" rx="3" fill="${M}"/><line x1="146" y1="96" x2="156" y2="152" stroke="${M}" stroke-width="7" stroke-linecap="round" opacity=".45"/><circle cx="106" cy="150" r="4.5" fill="${A}"/>`; }
+    case 'ellipW': return `<line x1="64" y1="174" x2="146" y2="174" stroke="${D}" stroke-width="5" stroke-linecap="round"/><line x1="134" y1="174" x2="126" y2="86" stroke="${D}" stroke-width="5" stroke-linecap="round"/>` +
+      `<line x1="${s.han[0].toFixed(1)}" y1="${s.han[1].toFixed(1)}" x2="118" y2="130" stroke="${M}" stroke-width="4" stroke-linecap="round"/><ellipse cx="100" cy="162" rx="18" ry="7" fill="none" stroke="${D}" stroke-width="2" stroke-dasharray="3 3"/>`;
+    case 'ghdW': return `<rect x="${(P[0] - 4).toFixed(1)}" y="${(P[1] + 6).toFixed(1)}" width="20" height="12" rx="5" fill="${D}"/>` + post(P[0] + 6, P[1] + 18, G, 5) +
+      `<circle cx="38" cy="140" r="6" fill="${D}"/><line x1="38" y1="146" x2="38" y2="176" stroke="${D}" stroke-width="4"/><line x1="38" y1="176" x2="106" y2="176" stroke="${D}" stroke-width="4"/>`;
+    case 'wallL': return `<rect x="28" y="20" width="10" height="${G - 20}" rx="2" fill="${D}" opacity=".5"/>`;
+    case 'wallR': return `<rect x="156" y="20" width="10" height="${G - 20}" rx="2" fill="${D}" opacity=".5"/>`;
+    case 'wallBehind': return `<rect x="62" y="22" width="76" height="${G - 22}" rx="4" fill="${D}" opacity=".16"/>`;
+  }
+  return '';
+}
+
 /* ---------- render one frame ---------- */
-function figSvg(s, prop) {
-  const L = (a, b, w, c, o) => `<line x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="round" ${o ? 'opacity="' + o + '"' : ''}/>`;
-  const far = '#5d6380', near = 'var(--acc)', body = '#cfd4e4';
-  return `<line x1="6" y1="${GROUND + 3}" x2="194" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-linecap="round"/>
-    ${L(s.pel, s.kne2, 8, far)}${L(s.kne2, s.ank2, 7, far)}${L(s.ank2, s.toe2, 5, far)}
-    ${L(s.sho, s.elb2, 7, far)}${L(s.elb2, s.han2, 6, far)}
-    ${propSvg(prop, s)}
+function figSvg(s, a) {
+  if (typeof a === 'string' || a == null) a = { prop: a };
+  const L = (p, q, w, c, o) => `<line x1="${p[0].toFixed(1)}" y1="${p[1].toFixed(1)}" x2="${q[0].toFixed(1)}" y2="${q[1].toFixed(1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="round" ${o ? 'opacity="' + o + '"' : ''}/>`;
+  const front = a.view === 'front';
+  const farLeg = front ? '#cfd4e4' : '#5d6380', farArm = front ? 'var(--acc)' : '#5d6380', near = 'var(--acc)', body = '#cfd4e4';
+  return `<line x1="-40" y1="${GROUND + 3}" x2="240" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-linecap="round"/>
+    ${sceneSvg(a.scene, s)}
+    ${L(s.pel, s.kne2, 8, farLeg)}${L(s.kne2, s.ank2, 7, farLeg)}${L(s.ank2, s.toe2, 5, farLeg)}
+    ${L(s.sho, s.elb2, 7, farArm)}${L(s.elb2, s.han2, 6, farArm)}
+    ${propSvg(a.prop, s)}
     ${L(s.pel, s.sho, 12, body)}
     ${L(s.pel, s.kne, 9, body)}${L(s.kne, s.ank, 8, body)}${L(s.ank, s.toe, 5.5, body)}
     ${L(s.sho, s.elb, 8, near)}${L(s.elb, s.han, 7, near)}
-    <circle cx="${s.hed[0].toFixed(1)}" cy="${s.hed[1].toFixed(1)}" r="${LEN.head}" fill="${body}"/>`;
+    <circle cx="${s.hed[0].toFixed(1)}" cy="${s.hed[1].toFixed(1)}" r="${LEN.head}" fill="${body}"/>
+    ${front ? faceFront(s) : faceSvg(s)}`;
+}
+function faceFront(s) {
+  const p = s._p || {}, up = (p.nek != null ? p.nek : p.tor), c = pol(s.hed, up, 1);
+  const e1 = pol(c, up + 90, 4), e2 = pol(c, up - 90, 4);
+  return `<circle cx="${e1[0].toFixed(1)}" cy="${e1[1].toFixed(1)}" r="1.8" fill="#1a1f33"/><circle cx="${e2[0].toFixed(1)}" cy="${e2[1].toFixed(1)}" r="1.8" fill="#1a1f33"/>`;
 }
 
 /* ---------- live animation ---------- */
 /* union bounding box across the whole loop, so each figure fills its frame */
 const PROP_PAD = { bike: 74, rower: 96, cable: 88, cableHigh: 88, cableSide: 92, bandFront: 92, bandBack: 92, bandHigh: 62,
   bb: 52, bbBack: 52, bbFront: 52, benchFlat: 58, benchFlatDb: 58, benchHigh: 50, benchInc: 44, barHigh: 62, barLow: 62,
-  box: 62, bench: 64, wall: 58, wallBack: 34, sled: 34, rope: 24, kb: 16, db: 16, dbOne: 16, dbSmall: 14 };
+  box: 62, bench: 64, wall: 58, wallBack: 34, sled: 34, rope: 80, kb: 16, db: 16, dbOne: 16, dbSmall: 14 };
 const _vbCache = {};
 function viewBoxFor(a, key) {
   if (_vbCache[key]) return _vbCache[key];
@@ -1233,8 +1384,11 @@ function viewBoxFor(a, key) {
   }
   const pad = LEN.head + 16;
   x0 -= pad; x1 += pad; y0 -= pad; y1 += pad + 6;
-  const pp = PROP_PAD[a.prop];
+  const pp = a.scene ? null : PROP_PAD[a.prop];
   if (pp) { x0 = Math.min(x0, CX - pp); x1 = Math.max(x1, CX + pp); y1 = Math.max(y1, GROUND + 10); }
+  const sb = SCENE_BOX[a.scene];
+  if (sb) { x0 = Math.min(x0, sb[0] - 6); y0 = Math.min(y0, sb[1] - 6); x1 = Math.max(x1, sb[2] + 6); y1 = Math.max(y1, sb[3] + 8); }
+  if (['bb', 'bbBack', 'bbFront', 'bbHip'].includes(a.prop)) { x0 -= 8; x1 += 8; }
   let w = x1 - x0, hgt = y1 - y0;
   const side = Math.max(w, hgt);                 // keep it square so nothing is squashed
   x0 -= (side - w) / 2; y0 -= (side - hgt) / 2;
@@ -1258,7 +1412,7 @@ const Figure = {
       return { n, a, t: Math.random() * 1000 };
     });
     if (S.flags.calm || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
-      Figure._items.forEach(it => { const p = it.a.frames[it.a.frames.length - 1]; it.n.innerHTML = figSvg(place(p), it.a.prop); });
+      Figure._items.forEach(it => { const p = it.a.frames[it.a.frames.length - 1]; it.n.innerHTML = figSvg(place(p), it.a); });
       return;
     }
     let last = performance.now(), acc = 0;
@@ -1272,15 +1426,248 @@ const Figure = {
         const f = it.a.frames, speed = it.a.speed || 1500;
         it.t += dt;
         let u;
-        if (f.length > 2) { const seg = (it.t / speed) % f.length; const i = Math.floor(seg); const k = ease(seg - i); u = mixPose(f[i], f[(i + 1) % f.length], k); }
+        if (f.length > 2) { const seg = (it.t / speed) % f.length; const i = Math.floor(seg); const k = it.a.linear ? seg - i : ease(seg - i); u = mixPose(f[i], f[(i + 1) % f.length], k); }
         else { const cyc = (it.t % (speed * 2)) / speed; const k = cyc < 1 ? ease(cyc) : ease(2 - cyc); u = mixPose(f[0], f[1], k); }
-        it.n.innerHTML = figSvg(place(u), it.a.prop);
+        it.n.innerHTML = figSvg(place(u), it.a);
       });
     };
     Figure._raf = requestAnimationFrame(step);
   },
   stop() { if (Figure._raf) cancelAnimationFrame(Figure._raf); Figure._raf = null; Figure._items = []; }
 };
+/* =========================================================
+   POSE CORRECTIONS
+   Convention: the body always faces RIGHT when upright.
+   Its front is 90° clockwise from the spine, so:
+     lying with the head LEFT  = face up   (bench, bridge, dead bug)
+     lying with the head RIGHT = face down (push-up, plank, bird dog)
+   Limbs are placed by where hands (H) and feet (F) should be;
+   inverse kinematics picks the natural bend.
+   ========================================================= */
+const GG = GROUND;
+function W(o) {
+  const q = Object.assign({}, o);
+  if (q.H && !('H2' in q) && !('ua2' in q)) q.H2 = [q.H[0] - 3, q.H[1] + 1];
+  if (q.Hs && !('H2s' in q) && !('ua2' in q)) q.H2s = [q.Hs[0] - 3, q.Hs[1] + 1];
+  if (q.F && !('F2' in q) && !('th2' in q)) q.F2 = [q.F[0] - 4, q.F[1]];
+  return Object.assign({ ik: true, tor: -90, px: CX, py: 112, ua: 92, fa: 92, ua2: 95, fa2: 95, th: 90, sh: 90, th2: 90, sh2: 90, ft: 0, ft2: 0 }, q);
+}
+function pedalFrames(C, rx, ry, n, base, handFn) {
+  return Array.from({ length: n }, (_, i) => {
+    const t = (270 + i * 360 / n) * Math.PI / 180, t2 = t + Math.PI;
+    const o = Object.assign({}, base, { F: [C[0] + rx * Math.cos(t), C[1] + ry * Math.sin(t)], F2: [C[0] + rx * Math.cos(t2), C[1] + ry * Math.sin(t2)] });
+    if (handFn) Object.assign(o, handFn(t));
+    return W(o);
+  });
+}
+/* shared bodies */
+const SUPINE_BENCH = { px: 110, py: 144, tor: 177, F: [148, 174], F2: [144, 174] };           // head left, face up, on bench
+const ALL_FOURS = { px: 80, py: 130, tor: 0, H: [121, 174], H2: [118, 174], F: [48, 170], F2: [45, 171], ft: 166, ft2: 166 };
+const LYING_UP = { px: 102, py: 165, tor: 180, nek: 180 };                                    // on the floor, face up
+const WALK_A = { tor: -88, th: 72, sh: 82, ft: 0, th2: 108, sh2: 118, ft2: 28 };
+const WALK_B = { tor: -88, th: 108, sh: 118, ft: 28, th2: 72, sh2: 82, ft2: 0 };
+
+const ANIM_FIX = {
+  /* ---------- lower body ---------- */
+  squatBar: { prop: 'bbBack', loose: true, frames: [P({ ua: 115, fa: -115, ua2: 118, fa2: -112 }), P({ tor: -64, ua: 115, fa: -115, ua2: 118, fa2: -112, th: 16, sh: 102, th2: 14, sh2: 104 })] },
+  squatFront: { prop: 'bbFront', frames: [P({ ua: 15, fa: -150, ua2: 19, fa2: -146 }), P({ tor: -74, ua: 15, fa: -150, ua2: 19, fa2: -146, th: 16, sh: 104, th2: 14, sh2: 106 })] },
+  deadlift: { prop: 'bb', frames: [
+    W({ px: 90, py: 136, tor: -35, H: [112, 161], F: [104, 176], F2: [100, 176] }),
+    W({ px: 98, py: 112, tor: -90, H: [101, 118], F: [104, 176], F2: [100, 176] })] },
+  rdl: { prop: 'bb', frames: [
+    W({ px: 98, py: 112, tor: -90, H: [101, 118], F: [104, 176], F2: [100, 176] }),
+    W({ px: 84, py: 116, tor: -18, H: [118, 152], F: [104, 176], F2: [100, 176] })] },
+  hinge: { prop: 'none', frames: [
+    W({ px: 98, py: 112, tor: -90, Hs: [8, 10], F: [104, 176], F2: [100, 176] }),
+    W({ px: 84, py: 116, tor: -14, Hs: [8, 10], F: [104, 176], F2: [100, 176] })] },
+  swing: { prop: 'kb', frames: [
+    W({ px: 84, py: 118, tor: -30, H: [102, 146], F: [110, 176], F2: [106, 176] }),
+    W({ px: 98, py: 112, tor: -90, H: [140, 78], F: [110, 176], F2: [106, 176] })] },
+  slrdl: { prop: 'none', frames: [
+    W({ px: 100, py: 112, tor: -90, F: [104, 176], F2: [98, 176] }),
+    W({ px: 96, py: 114, tor: -12, H: [132, 150], F: [104, 176], F2: [36, 124], ft2: 90 })] },
+  lunge: { prop: 'none', frames: [
+    W({ px: 90, py: 118, tor: -88, F: [116, 176], F2: [60, 170], ft2: 30 }),
+    W({ px: 88, py: 140, tor: -88, F: [116, 176], F2: [60, 166], ft2: 55 })] },
+  lungeDb: { prop: 'db', frames: [
+    W({ px: 90, py: 118, tor: -88, F: [116, 176], F2: [60, 170], ft2: 30 }),
+    W({ px: 88, py: 140, tor: -88, F: [116, 176], F2: [60, 166], ft2: 55 })] },
+  stepup: { scene: 'boxW', prop: 'none', frames: [
+    W({ px: 96, py: 116, tor: -86, F: [124, 150], F2: [72, 176] }),
+    W({ px: 122, py: 88, tor: -88, F: [124, 150], F2: [106, 124], ft2: 40 })] },
+  bulgarian: { scene: 'benchBehindW', prop: 'none', frames: [
+    W({ px: 92, py: 118, tor: -82, F: [120, 176], F2: [54, 140], ft2: 180 }),
+    W({ px: 90, py: 142, tor: -82, F: [120, 176], F2: [54, 140], ft2: 180 })] },
+  legpress: { scene: 'legpressW', prop: 'plate', frames: [
+    W({ px: 80, py: 150, tor: -150, H: [84, 150], F: [94, 119], F2: [91, 121], ft: -156, ft2: -156 }),
+    W({ px: 80, py: 150, tor: -150, H: [84, 150], F: [105, 93], F2: [102, 95], ft: -156, ft2: -156 })] },
+  hipthrust: { scene: 'hipBench', prop: 'bbHip', frames: [
+    W({ px: 88, py: 164, tor: -139, H: [86, 154], F: [138, 174], F2: [134, 174] }),
+    W({ px: 98, py: 138, tor: 180, nek: 180, H: [96, 128], F: [138, 174], F2: [134, 174] })] },
+  bridge: { prop: 'none', frames: [
+    W({ px: 98, py: 165, tor: 180, nek: 180, ua: 2, fa: 1, ua2: 4, fa2: 3, F: [138, 174], F2: [134, 174] }),
+    W({ px: 92.6, py: 145, tor: 150, nek: 180, ua: 0, fa: 0, ua2: 2, fa2: 2, F: [138, 174], F2: [134, 174] })] },
+  /* ---------- push ---------- */
+  pushup: { prop: 'none', frames: [
+    W({ px: 99, py: 146, tor: -23, H: [134, 175], H2: [131, 175], F: [42, 165], F2: [39, 166], ft: 60, ft2: 60 }),
+    W({ px: 106, py: 160, tor: -4, H: [134, 175], H2: [131, 175], F: [42, 165], F2: [39, 166], ft: 60, ft2: 60 })] },
+  bench: { scene: 'benchFlat', prop: 'bb', frames: [W(Object.assign({}, SUPINE_BENCH, { H: [72, 96] })), W(Object.assign({}, SUPINE_BENCH, { H: [76, 124] }))] },
+  benchDb: { scene: 'benchFlat', prop: 'db', frames: [W(Object.assign({}, SUPINE_BENCH, { H: [72, 96] })), W(Object.assign({}, SUPINE_BENCH, { H: [78, 126] }))] },
+  floorPress: { prop: 'db', frames: [
+    W(Object.assign({}, LYING_UP, { H: [64, 120], F: [138, 174], F2: [134, 174] })),
+    W(Object.assign({}, LYING_UP, { H: [70, 146], F: [138, 174], F2: [134, 174] }))] },
+  skull: { scene: 'benchFlat', prop: 'bb', frames: [
+    W(Object.assign({}, SUPINE_BENCH, { ua: -86, fa: -88, ua2: -84, fa2: -86 })),
+    W(Object.assign({}, SUPINE_BENCH, { ua: -80, fa: -174, ua2: -78, fa2: -172 }))] },
+  incline: { scene: 'benchInc', prop: 'db', frames: [
+    W({ px: 116, py: 140, tor: -145, H: [90, 70], F: [150, 174], F2: [146, 174] }),
+    W({ px: 116, py: 140, tor: -145, H: [96, 106], F: [150, 174], F2: [146, 174] })] },
+  pressH: { scene: 'seatBack', prop: 'handle', frames: [
+    W({ px: 98, py: 136, tor: -92, H: [110, 104], F: [130, 174], F2: [126, 174] }),
+    W({ px: 98, py: 136, tor: -92, H: [142, 100], F: [130, 174], F2: [126, 174] })] },
+  pressV: { prop: 'db', frames: [
+    W({ H: [108, 62], F: [102, 176], F2: [98, 176] }),
+    W({ H: [101, 26], F: [102, 176], F2: [98, 176] })] },
+  pressBar: { prop: 'bb', frames: [
+    W({ H: [112, 66], F: [102, 176], F2: [98, 176] }),
+    W({ H: [100, 25], F: [102, 176], F2: [98, 176] })] },
+  pike: { prop: 'none', frames: [
+    W({ px: 100, py: 112, tor: 48, nek: 60, H: [156, 174], H2: [153, 174], F: [74, 167], F2: [71, 168], ft: 60, ft2: 60 }),
+    W({ px: 112, py: 118, tor: 58, nek: 75, H: [156, 174], H2: [153, 174], F: [74, 167], F2: [71, 168], ft: 60, ft2: 60 })] },
+  latRaise: { view: 'front', prop: 'dbSmall', frames: [
+    W({ ua: 80, fa: 82, ua2: 100, fa2: 98, th: 86, sh: 88, th2: 94, sh2: 92, ft: 10, ft2: 170 }),
+    W({ ua: 4, fa: 2, ua2: 176, fa2: 178, th: 86, sh: 88, th2: 94, sh2: 92, ft: 10, ft2: 170 })] },
+  bandPress: { scene: 'bandAnchorL', prop: 'handle', frames: [W({ H: [110, 86], F: [104, 176], F2: [98, 176] }), W({ H: [146, 82], F: [104, 176], F2: [98, 176] })] },
+  /* ---------- pull ---------- */
+  rowBar: { prop: 'bb', frames: [
+    W({ px: 84, py: 118, tor: -28, H: [118, 148], F: [104, 176], F2: [100, 176] }),
+    W({ px: 84, py: 118, tor: -28, H: [106, 120], F: [104, 176], F2: [100, 176] })] },
+  rowDb: { scene: 'benchLowR', prop: 'dbOne', frames: [
+    W({ px: 90, py: 122, tor: -26, H: [124, 150], H2: [134, 142], F: [106, 176], F2: [70, 176] }),
+    W({ px: 90, py: 122, tor: -26, H: [110, 118], H2: [134, 142], F: [106, 176], F2: [70, 176] })] },
+  rowSeated: { scene: 'cableLowR', prop: 'handle', frames: [
+    W({ px: 70, py: 150, tor: -62, H: [134, 124], F: [130, 150], F2: [127, 151], ft: -70, ft2: -70 }),
+    W({ px: 70, py: 150, tor: -96, H: [80, 122], F: [130, 150], F2: [127, 151], ft: -70, ft2: -70 })] },
+  rowInv: { scene: 'tableBar', prop: 'none', frames: [
+    W({ px: 99.4, py: 158.5, tor: -167.8, H: [64, 104], H2: [61, 105], F: [162, 172], F2: [159, 172], ft: -80, ft2: -80 }),
+    W({ px: 105, py: 142.9, tor: -152.9, H: [64, 104], H2: [61, 105], F: [162, 172], F2: [159, 172], ft: -80, ft2: -80 })] },
+  pullup: { prop: 'barHigh', frames: [
+    W({ px: 100, py: 112, H: [104, 26], H2: [101, 26], F: [86, 164], F2: [82, 165], ft: 30, ft2: 30 }),
+    W({ px: 100, py: 78, H: [104, 26], H2: [101, 26], F: [86, 130], F2: [82, 131], ft: 30, ft2: 30 })] },
+  pulldown: { scene: 'seatPad', prop: 'none', frames: [
+    W({ px: 96, py: 132, tor: -84, H: [106, 46], F: [126, 174], F2: [122, 174] }),
+    W({ px: 96, py: 132, tor: -84, H: [114, 96], F: [126, 174], F2: [122, 174] })] },
+  bandRow: { scene: 'bandAnchorR', prop: 'handle', frames: [W({ H: [148, 86], F: [104, 176], F2: [98, 176] }), W({ H: [110, 94], F: [104, 176], F2: [98, 176] })] },
+  bandPull: { scene: 'bandAnchorHigh', prop: 'handle', frames: [W({ H: [120, 30], F: [104, 176], F2: [98, 176] }), W({ H: [112, 88], F: [104, 176], F2: [98, 176] })] },
+  facepull: { scene: 'cableColMid', prop: 'handle', loose: true, frames: [
+    W({ H: [146, 70], F: [104, 176], F2: [98, 176] }),
+    W({ ua: -165, fa: -40, ua2: -168, fa2: -43, F: [104, 176], F2: [98, 176] })] },
+  ytw: { prop: 'none', frames: [
+    W({ px: 80, py: 165, tor: 0, ua: -2, fa: -2, ua2: 0, fa2: 0, F: [16, 168], F2: [13, 169], ft: 180, ft2: 180 }),
+    W({ px: 80, py: 165, tor: -5, nek: -14, ua: -20, fa: -20, ua2: -18, fa2: -18, F: [16, 168], F2: [13, 169], ft: 180, ft2: 180 })] },
+  hangKnee: { prop: 'barHigh', frames: [
+    W({ px: 100, py: 106, H: [104, 20], H2: [101, 20], F: [102, 168], F2: [98, 168], ft: 30, ft2: 30 }),
+    W({ px: 100, py: 106, H: [104, 20], H2: [101, 20], F: [130, 128], F2: [126, 129], ft: 30, ft2: 30 })] },
+  /* ---------- arms ---------- */
+  pushdown: { scene: 'cableColR', prop: 'handle', frames: [W({ H: [116, 96], F: [104, 176], F2: [98, 176] }), W({ H: [108, 118], F: [104, 176], F2: [98, 176] })] },
+  /* ---------- core ---------- */
+  plank: { prop: 'none', hold: true, frames: [
+    W({ px: 99, py: 154.5, tor: -9.4, H: [160, 174], H2: [157, 174], F: [36, 165], F2: [33, 166], ft: 60, ft2: 60 }),
+    W({ px: 99, py: 153.5, tor: -10, H: [160, 174], H2: [157, 174], F: [36, 165], F2: [33, 166], ft: 60, ft2: 60 })] },
+  sideplank: { view: 'front', prop: 'none', hold: true, frames: [
+    W({ px: 98.5, py: 146, tor: -24, H: [138, 175], ua2: -90, fa2: -90, F: [40, 172], F2: [43, 170], ft: 10, ft2: 10 }),
+    W({ px: 98.5, py: 143, tor: -26, H: [138, 175], ua2: -90, fa2: -90, F: [40, 172], F2: [43, 170], ft: 10, ft2: 10 })] },
+  deadbug: { prop: 'none', frames: [
+    W(Object.assign({}, LYING_UP, { H: [62, 119], H2: [59, 120], F: [134, 133], F2: [131, 134], ft: -90, ft2: -90 })),
+    W(Object.assign({}, LYING_UP, { H: [16, 158], H2: [59, 120], F: [134, 133], F2: [164, 156], ft: -90, ft2: -80 }))] },
+  birddog: { prop: 'none', frames: [
+    W(ALL_FOURS),
+    W(Object.assign({}, ALL_FOURS, { H: null, ua: -4, fa: -4, F2: [18, 128] }))] },
+  pallof: { scene: 'postBehind', prop: 'handle', frames: [W({ H: [110, 90], F: [104, 176], F2: [98, 176] }), W({ H: [146, 88], F: [104, 176], F2: [98, 176] })] },
+  crunch: { scene: 'cableColR', prop: 'none', frames: [
+    W({ px: 96, py: 138, tor: -90, H: [106, 84], F: [64, 172], F2: [61, 172], ft: 180, ft2: 180 }),
+    W({ px: 96, py: 138, tor: -25, nek: -15, H: [148, 128], F: [64, 172], F2: [61, 172], ft: 180, ft2: 180 })] },
+  backext: { scene: 'ghdW', prop: 'none', frames: [
+    W({ px: 96, py: 104, tor: 80, H: [95, 135], F: [44, 132], F2: [41, 133], ft: 70, ft2: 70 }),
+    W({ px: 96, py: 104, tor: -4, H: [126, 108], F: [44, 132], F2: [41, 133], ft: 70, ft2: 70 })] },
+  carry: { prop: 'db', frames: [P(Object.assign({ ua: 90, fa: 90, ua2: 93, fa2: 93 }, WALK_A)), P(Object.assign({ ua: 90, fa: 90, ua2: 93, fa2: 93 }, WALK_B))] },
+  carryOh: { prop: 'none', frames: [P(Object.assign({ ua: -86, fa: -88, ua2: -92, fa2: -90 }, WALK_A)), P(Object.assign({ ua: -86, fa: -88, ua2: -92, fa2: -90 }, WALK_B))] },
+  /* ---------- cardio ---------- */
+  run: { prop: 'none', speed: 420, frames: [
+    P({ tor: -80, th: 50, sh: 100, ft: 10, th2: 120, sh2: 195, ft2: 100, ua: 130, fa: 40, ua2: 55, fa2: -35 }),
+    P({ tor: -80, th: 120, sh: 195, ft: 100, th2: 50, sh2: 100, ft2: 10, ua: 55, fa: -35, ua2: 130, fa2: 40 })] },
+  walk: { prop: 'none', speed: 900, frames: [
+    P(Object.assign({ ua: 104, fa: 96, ua2: 76, fa2: 66 }, WALK_A)),
+    P(Object.assign({ ua: 76, fa: 66, ua2: 104, fa2: 96 }, WALK_B))] },
+  rope: { prop: 'rope', linear: true, speed: 120, frames: [
+    W({ py: 112, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 176], F2: [99, 176], ropeX: 102, ropeY: 4 }),
+    W({ py: 108, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 172], F2: [99, 172], ft: 30, ft2: 30, ropeX: 178, ropeY: 104 }),
+    W({ py: 102, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 166], F2: [99, 166], ft: 50, ft2: 50, ropeX: 102, ropeY: GG + 10 }),
+    W({ py: 108, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 172], F2: [99, 172], ft: 30, ft2: 30, ropeX: 26, ropeY: 104 })] },
+  circuit: { prop: 'none', speed: 460, frames: [
+    W({ px: 96, py: 138, tor: -58, ua: 92, fa: 86, ua2: 95, fa2: 89, F: [110, 176], F2: [106, 176] }),
+    W({ px: 100, py: 98, tor: -88, ua: -80, fa: -82, ua2: -84, fa2: -86, F: [102, 160], F2: [98, 161], ft: 60, ft2: 60 })] },
+  rowerg: { scene: 'rowerW', prop: 'handle', speed: 900, frames: [
+    W({ px: 100, py: 152, tor: -72, H: [162, 134], F: [148, 152], F2: [145, 153], ft: -50, ft2: -50 }),
+    W({ px: 86, py: 152, tor: -110, H: [92, 124], F: [148, 152], F2: [145, 153], ft: -50, ft2: -50 })] },
+  cycle: { scene: 'bikeW', prop: 'none', linear: true, speed: 95, frames: pedalFrames([104, 152], 10, 10, 8, { px: 90, py: 108, tor: -55, H: [138, 90], H2: [135, 91], ft: 10, ft2: 10 }) },
+  mtbike: { scene: 'mtbW', prop: 'none', linear: true, speed: 85, frames: pedalFrames([106, 150], 11, 11, 8, { px: 94, py: 102, tor: -45, H: [146, 94], H2: [143, 95], ft: 10, ft2: 10 }) },
+  ellip: { scene: 'ellipW', prop: 'none', linear: true, speed: 110, frames: pedalFrames([100, 162], 18, 7, 8, { px: 96, py: 104, tor: -88, ft: 0, ft2: 0 },
+    t => ({ H: [120 - 12 * Math.cos(t), 96], H2: [120 + 12 * Math.cos(t), 97] })) },
+  /* ---------- mobility ---------- */
+  catcow: { prop: 'none', frames: [W(Object.assign({}, ALL_FOURS, { py: 134, nek: -35 })), W(Object.assign({}, ALL_FOURS, { py: 126, tor: -6, nek: 45, ft: 150, ft2: 146 }))] },
+  tspine: { prop: 'none', loose: true, speed: 1000, frames: [
+    W(ALL_FOURS),
+    W(Object.assign({}, ALL_FOURS, { H: [100, 160], nek: 30 })),
+    W(ALL_FOURS),
+    W(Object.assign({}, ALL_FOURS, { H: null, ua: -80, fa: -82, nek: -60 }))] },
+  hipCircle: { prop: 'none', speed: 900, frames: [
+    W(ALL_FOURS),
+    W(Object.assign({}, ALL_FOURS, { F: [40, 128] })),
+    W(Object.assign({}, ALL_FOURS, { F: [74, 142] }))] },
+  child: { prop: 'none', hold: true, frames: [
+    W({ px: 78, py: 150, tor: 10, nek: 20, H: [160, 172], H2: [157, 173], F: [74, 172], F2: [71, 172], ft: 180, ft2: 180 }),
+    W({ px: 78, py: 151, tor: 11, nek: 21, H: [162, 172], H2: [159, 173], F: [74, 172], F2: [71, 172], ft: 180, ft2: 180 })] },
+  dog: { prop: 'none', hold: true, frames: [
+    W({ px: 100, py: 112, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], F: [70, 167], F2: [67, 168], ft: 60, ft2: 60 }),
+    W({ px: 100, py: 112, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], F: [70, 170], F2: [67, 164], ft: 30, ft2: 70 })] },
+  lungeStretch: { prop: 'none', loose: true, frames: [
+    W({ px: 86, py: 146, tor: -30, H: [120, 174], H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 }),
+    W({ px: 86, py: 146, tor: -30, nek: -60, H: null, ua: -78, fa: -80, H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 })] },
+  hamstring: { prop: 'none', frames: [
+    W({ px: 98, py: 114, tor: -88, F: [122, 174], F2: [84, 176], ft: -40 }),
+    W({ px: 86, py: 122, tor: -24, H: [126, 160], F: [122, 174], F2: [84, 176], ft: -40 })] },
+  calfStretch: { scene: 'wallR', prop: 'none', hold: true, frames: [
+    W({ px: 96, py: 120, tor: -65, H: [154, 82], H2: [151, 84], F: [118, 176], F2: [66, 176] }),
+    W({ px: 99, py: 121, tor: -60, H: [154, 82], H2: [151, 84], F: [118, 176], F2: [66, 176] })] },
+  couch: { scene: 'wallL', prop: 'none', hold: true, frames: [
+    W({ px: 66, py: 146, tor: -92, H: [100, 136], H2: [97, 137], F: [118, 176], F2: [46, 140], ft2: -90 }),
+    W({ px: 68, py: 146, tor: -97, H: [102, 136], H2: [99, 137], F: [118, 176], F2: [46, 140], ft2: -90 })] },
+  ankleRock: { prop: 'none', frames: [
+    W({ px: 74, py: 140, tor: -86, H: [110, 142], H2: [107, 143], F: [120, 176], F2: [40, 172], ft2: 180 }),
+    W({ px: 84, py: 140, tor: -86, H: [120, 140], H2: [117, 141], F: [120, 176], F2: [40, 172], ft2: 180 })] },
+  pigeon: { prop: 'none', hold: true, frames: [
+    P({ anchor: 'py', py: GG - 12, tor: -50, ua: 76, fa: 62, ua2: 80, fa2: 66, th: 14, sh: 168, ft: 172, th2: 172, sh2: 174, ft2: 150 }),
+    P({ anchor: 'py', py: GG - 12, tor: -38, ua: 60, fa: 46, ua2: 64, fa2: 50, th: 14, sh: 168, ft: 172, th2: 172, sh2: 174, ft2: 150 })] },
+  shoulderCircle: { prop: 'none', loose: true, speed: 700, frames: [
+    P({ ua: 90, fa: 90, ua2: 94, fa2: 94 }), P({ ua: 0, fa: 0, ua2: 4, fa2: 4 }), P({ ua: -90, fa: -90, ua2: -86, fa2: -86 }), P({ ua: 150, fa: 150, ua2: 154, fa2: 154 })] },
+  wallSlide: { view: 'front', scene: 'wallBehind', prop: 'none', frames: [
+    W({ ua: 30, fa: -90, ua2: 150, fa2: -90, th: 88, sh: 88, th2: 92, sh2: 92, ft: 10, ft2: 170 }),
+    W({ ua: -50, fa: -60, ua2: -130, fa2: -120, th: 88, sh: 88, th2: 92, sh2: 92, ft: 10, ft2: 170 })] },
+  seated9090: { view: 'front', prop: 'none', frames: [
+    W({ py: 166, ua: 60, fa: 70, ua2: 120, fa2: 110, th: 12, sh: 178, th2: -40, sh2: 62, ft: 170, ft2: 10 }),
+    W({ py: 166, ua: 60, fa: 70, ua2: 120, fa2: 110, th: -140, sh: 118, th2: 168, sh2: 2, ft: 170, ft2: 10 })] }
+};
+Object.assign(ANIM, ANIM_FIX);
+EXANIM.floorpr = 'floorPress';
+
+/* pre-solve every IK keyframe so angles exist even where a limb is only pinned in one frame */
+Object.values(ANIM).forEach(a => a.frames.forEach(f => {
+  if (!f.ik) return;
+  ['H', 'H2', 'F', 'F2', 'Hs', 'H2s'].forEach(k => { if (f[k] === null) delete f[k]; });
+  const q = resolveIK(f);
+  ['ua', 'fa', 'ua2', 'fa2', 'th', 'sh', 'th2', 'sh2'].forEach(k => { f[k] = q[k]; });
+}));
 /* =========================================================
    HEART RATE — zones, live BLE feed, manual fallback
    ========================================================= */
@@ -1455,7 +1842,7 @@ const Onboard = {
       ${nav(d.heightCm > 100 && d.weightKg > 25 && d.targetKg > 25)}</div>`;
     }
     if (st === 'where') return h`<div class="fade">${prog}<h2>Where will you train?</h2><div class="stack mt">
-      ${[['gym', 'Gym membership', 'Full equipment assumed'], ['home_eq', 'Home, with some equipment', 'You tell me what you have'], ['home_none', 'Home, no equipment', 'Bodyweight and the outdoors']].map(([k, t, dd]) => `<button class="optcard ${d.setting === k ? 'on' : ''}" onclick="OB.d.setting='${k}';route()"><div class="ic">${k === 'gym' ? '🏋️' : k === 'home_eq' ? '🏠' : '🌤️'}</div><div><div class="t">${t}</div><div class="d">${dd}</div></div></button>`).join('')}
+      ${[['gym', 'Gym membership', 'Full equipment assumed'], ['home_eq', 'Home, with some equipment', 'You tell me what you have'], ['home_none', 'Home, no gear', 'Bodyweight only — nothing to buy']].map(([k, t, dd]) => `<button class="optcard ${d.setting === k ? 'on' : ''}" onclick="OB.d.setting='${k}';if('${k}'==='home_none'){OB.d.equipment=[];OB.d.mtbDays=[];}route()"><div class="ic">${k === 'gym' ? '🏋️' : k === 'home_eq' ? '🏠' : '🌤️'}</div><div><div class="t">${t}</div><div class="d">${dd}</div></div></button>`).join('')}
       </div>${nav(!!d.setting)}</div>`;
     if (st === 'gear') {
       if (d.setting !== 'home_eq') { return h`<div class="fade">${prog}<h2>Any extras?</h2><p class="mute">${d.setting === 'gym' ? 'Your gym covers the basics. Tick anything you also have at home for off days.' : 'Nothing needed. Tick anything you happen to own.'}</p>
@@ -1483,8 +1870,8 @@ const Onboard = {
   tog(k) { const e = OB.d.equipment; const i = e.indexOf(k); if (i > -1) e.splice(i, 1); else e.push(k); route(); },
   togDay(i) { const dd = OB.d.days; const j = dd.indexOf(i); if (j > -1) { dd.splice(j, 1); const k = OB.d.mtbDays.indexOf(i); if (k > -1) OB.d.mtbDays.splice(k, 1); } else dd.push(i); route(); },
   togMtb(i) { if (!OB.d.days.includes(i)) { toast('Pick it as a training day first'); return; } const dd = OB.d.mtbDays; const j = dd.indexOf(i); if (j > -1) dd.splice(j, 1); else dd.push(i); route(); },
-  next() { OB.step++; if (Onboard.steps[OB.step] === 'done') { Onboard.commit(); } route(); },
-  back() { OB.step = Math.max(0, OB.step - 1); route(); },
+  next() { OB.step++; if (Onboard.steps[OB.step] === 'gear' && OB.d.setting === 'home_none') OB.step++; if (Onboard.steps[OB.step] === 'done') { Onboard.commit(); } route(); },
+  back() { OB.step = Math.max(0, OB.step - 1); if (Onboard.steps[OB.step] === 'gear' && OB.d.setting === 'home_none') OB.step = Math.max(0, OB.step - 1); route(); },
   commit() {
     const d = OB.d;
     S.profile = { name: d.name.trim(), gender: d.gender, age: d.age, units: d.units, heightCm: d.heightCm, weightKg: d.weightKg, targetKg: d.targetKg, setting: d.setting, equipment: d.equipment.slice(), goal: d.goal, days: d.days.slice().sort(), minutes: d.minutes, cardioLevel: d.cardioLevel, mtbDays: d.mtbDays.slice(), rideMinutes: d.rideMinutes, createdAt: todayStr() };
@@ -1528,7 +1915,7 @@ const Today = {
     const wcard = h`<div class="card"><div class="eyebrow">Weight trend</div><div class="big num" style="font-size:1.8rem">${fmtWn(trendSeries().slice(-1)[0] ? trendSeries().slice(-1)[0].trend : curWeightKg())}<span class="mute small"> ${unitW()}</span></div><div class="mute small">${S.weights.length} weigh-ins</div><div class="row mt"><button class="sm sec" onclick="go('#/weigh')">Weigh in</button></div></div>`;
     const skipNote = skip.mode !== 'ok' ? h`<div class="card" style="border-color:color-mix(in srgb,var(--warn) 40%,transparent)"><b class="warn">${skip.mode === 'reset' ? 'Welcome back' : 'Missed a couple'}</b><div class="mute small">${skip.mode === 'reset' ? "It's been a while. Your next session restarts at 85% of previous loads. No penalty — just safer." : skip.missed + ' planned sessions missed. Your next session is eased back slightly so you can get moving again without a wall.'}</div></div>` : '';
     return h`<div class="fade"><div class="topbar"><div><div class="mute small">${greet}${p.name ? ', ' + esc(p.name) : ''}</div><h1>${niceDate(todayStr())}</h1></div><div class="pill">${DAYS[new Date().getDay()]}</div></div>
-      <div class="stack">${hero}${swapLine}${skipNote}${readyCard}<div class="grid2">${streakCard}${wcard}</div></div></div>`;
+      <div class="stack">${hero}${swapLine}${lengthCard()}${skipNote}${readyCard}<div class="grid2">${streakCard}${wcard}</div></div></div>`;
   },
   ignoreReady() { const r = S.readiness.find(x => x.date === todayStr()); if (r) { r.ignored = !r.ignored; save(); route(); } },
   manualReady() {
@@ -1555,7 +1942,7 @@ const Plan = {
     const done = new Set(S.sessions.map(s => s.date));
     const dow = new Date().getDay();
     return h`<div class="fade"><div class="topbar"><h1>Your week</h1><span class="pill">v${pr.version}</span></div>
-      <div class="mute small mb">${['General fitness', 'Cardio emphasis', 'Strength emphasis', 'Flexibility emphasis'][['general', 'cardio', 'strength', 'flex'].indexOf(p.goal)]} · ${p.days.length} days · ${p.minutes} min · ${p.setting === 'gym' ? 'gym' : p.setting === 'home_eq' ? 'home with gear' : 'bodyweight'}</div>
+      <div class="mute small mb">${['General fitness', 'Cardio emphasis', 'Strength emphasis', 'Flexibility emphasis'][['general', 'cardio', 'strength', 'flex'].indexOf(p.goal)]} · ${p.days.length} days · ${p.minutes} min · ${p.setting === 'gym' ? 'gym' : p.setting === 'home_eq' ? 'home with gear' : 'home, no gear'}</div>
       <div class="stack">${DAYS.map((n, d) => {
         const w = pr.week.find(x => x.day === d);
         const thisWeekDate = addDays(todayStr(), d - dow);
@@ -1700,12 +2087,12 @@ const Session = {
   rStrength(a) {
     const total = a.entries.reduce((n, e) => n + e.sets.length, 0), done = a.entries.reduce((n, e) => n + e.sets.filter(s => s.done).length, 0);
     const half = done >= Math.ceil(total / 2) && !a.checkin;
-    return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${esc(a.sess.title)}</b><div class="mute tiny">${done}/${total} sets</div></div><button class="back" onclick="Session.finishStrength()">Finish</button></div>
+    return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${esc(a.sess.title)}</b><div class="mute tiny">${done}/${total} sets · ${Math.round(Session.elapsedMin())} of ${a.minutes} min</div></div><button class="back" onclick="Session.finishStrength()">Finish</button></div>
       <div class="bar mb"><i style="width:${total ? done / total * 100 : 0}%"></i></div>
       ${a.notes.length ? `<div class="card mb small"><b>Adjusted for you:</b> <span class="mute">${a.notes.map(esc).join(' · ')}</span></div>` : ''}
       ${a.sess.mobility && a.sess.mobility.length ? `<details class="mb"><summary>Warm-up · ${a.sess.mobility.length} moves</summary><div class="list">${a.sess.mobility.map(m => `<div class="item"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div><div class="sub">${esc(MOBMAP[m].cue)}</div></div><span class="num mute">45s</span></div>`).join('')}</div></details>` : ''}
       ${half ? `<div class="card mb" style="border-color:var(--acc)"><b>Halfway. How are you feeling?</b><div class="row mt"><button class="sm sec" onclick="Session.checkin('good')">Good</button><button class="sm sec" onclick="Session.checkin('tired')">Tired</button><button class="sm danger" onclick="Session.checkin('struggling')">Struggling</button></div></div>` : ''}
-      <div class="stack">${a.entries.map((e, ei) => { const ex = EXMAP[e.exId]; return `<div class="card"><div class="exhead"><div class="row" style="align-items:flex-start"><div class="figthumb" onclick="Session.cue('${ex.id}')">${Figure.svg('ex', ex.id)}</div><div><div class="name">${esc(ex.n)}${e.subbed ? ' <span class="tag warn">swapped</span>' : ''}</div><div class="meta">${e.lo}–${e.hi} ${ex.timed ? 'sec' : 'reps'}${ex.bwOnly ? ' · bodyweight' : ''} ${S.loads[ex.id] && S.loads[ex.id].pr ? '· best e1RM ' + fmtW(S.loads[ex.id].pr) : ''}</div></div></div><button class="icon" onclick="Session.cue('${ex.id}')">?</button></div>
+      <div class="stack">${a.entries.map((e, ei) => { const ex = EXMAP[e.exId]; const isNext = ei === a.entries.findIndex(x => !x.sets.some(q => q.done)) && e.sets.some(q => !q.done); const proj = isNext ? Math.round(Session.projected()) : 0; return `${isNext ? `<div class="nextline"><span>Up next · about ${Math.max(1, Math.round(Session.exMinutes(e)))} min · on pace for ${proj} of ${a.minutes}</span><button class="sm ghost" onclick="Session.adjustSheet()">Adjust time</button></div>` : ''}<div class="card"><div class="exhead"><div class="row" style="align-items:flex-start"><div class="figthumb" onclick="Session.cue('${ex.id}')">${Figure.svg('ex', ex.id)}</div><div><div class="name">${esc(ex.n)}${e.subbed ? ' <span class="tag warn">swapped</span>' : ''}</div><div class="meta">${e.lo}–${e.hi} ${ex.timed ? 'sec' : 'reps'}${ex.bwOnly ? ' · bodyweight' : ''} ${S.loads[ex.id] && S.loads[ex.id].pr ? '· best e1RM ' + fmtW(S.loads[ex.id].pr) : ''}</div></div></div><button class="icon" onclick="Session.cue('${ex.id}')">?</button></div>
         <div class="hdr5"><span>#</span><span>${ex.bwOnly ? '' : unitW()}</span><span>${ex.timed ? 'sec' : 'reps'}</span><span>effort 1–10</span><span></span></div>
         ${e.sets.map((s, si) => `<div class="setrow"><span class="n">${si + 1}</span>${ex.bwOnly ? '<span class="n">bw</span>' : `<input type="number" inputmode="decimal" value="${s.weight != null ? fmtWn(s.weight, s.weight / KG < 20 ? 1 : 0) : ''}" placeholder="—" oninput="Session.setW(${ei},${si},this.value)">`}<input type="number" inputmode="numeric" value="${s.reps ?? ''}" oninput="Session.setR(${ei},${si},this.value)"><input type="number" inputmode="numeric" value="${s.rpe ?? ''}" placeholder="8" oninput="Session.setE(${ei},${si},this.value)"><div class="ok ${s.done ? 'on' : ''}" onclick="Session.tick(${ei},${si})">✓</div></div>`).join('')}
         <div class="row mt"><button class="sm ghost" onclick="Session.addSet(${ei})">+ set</button></div></div>`; }).join('')}</div>
@@ -1745,7 +2132,8 @@ const Session = {
       <div class="bar mt"><i style="width:${total ? elapsed / total * 100 : 0}%"></i></div>
       ${ph ? Session.hrStrip(targetZone(ph.k, c.structure)) : ''}
       <div class="mute small mt center">${esc(c.label || '')}</div>
-      <div class="grid2 mt"><button class="sec" onclick="Session.pause()">${a.paused ? 'Resume' : 'Pause'}</button><button class="sec" onclick="Session.skipPhase()">Skip phase</button></div>
+      <div class="grid3 mt"><button class="sec" onclick="Session.pause()">${a.paused ? 'Resume' : 'Pause'}</button><button class="sec" onclick="Session.skipPhase()">Skip</button>${muteBtn()}</div>
+      <button class="ghost mt" onclick="Session.adjustSheet()">Adjust time</button>
       <div class="list mt">${c.phases.map((p, i) => `<div class="item" style="${i === a.phaseIdx ? 'border-color:var(--acc)' : i < a.phaseIdx ? 'opacity:.45' : ''}"><div class="tag ${p.k === 'hard' ? 'hot' : ''}">${p.k}</div><div class="grow">${esc(p.label)}</div><span class="num mute">${Math.floor(p.sec / 60)}:${String(p.sec % 60).padStart(2, '0')}</span></div>`).join('')}</div>
       <div class="card mt"><b>Stop if</b><div class="mute small">you feel chest pain, faint, or can't catch your breath during a recovery block. That is not pushing through — that is a signal.</div></div></div>`;
   },
@@ -1824,7 +2212,8 @@ const Session = {
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>Riding</b><div class="mute tiny">planned ${plan} min</div></div><button class="back" onclick="Session.endRide()">Finish</button></div>
       <div class="card"><div class="timerWrap" style="padding-top:6px"><div class="stopwatch">${mins}:${secs}</div><div class="phase easy">${a.paused ? 'Paused' : 'Rolling'}</div></div><div class="figbox sm mt">${Figure.svg('cardio', 'mtb')}</div></div>
       ${Session.hrStrip(targetZ)}
-      <div class="grid2 mt"><button class="sec" onclick="Session.pause()">${a.paused ? 'Resume' : 'Pause'}</button><button class="sec" onclick="Session.askHR(${targetZ})">Check pulse</button></div>
+      <div class="grid3 mt"><button class="sec" onclick="Session.pause()">${a.paused ? 'Resume' : 'Pause'}</button><button class="sec" onclick="Session.askHR(${targetZ})">Pulse</button>${muteBtn()}</div>
+      <button class="ghost mt" onclick="Session.adjustSheet()">Change planned time</button>
       <div class="card mt"><b>Out there</b><div class="mute small">The trail sets the effort, not the app. Climbs will take you into zone 4 and that is fine — the aim is that the whole ride averages out steady, not that every minute does.</div></div>
       <div class="card mt"><b>Stop if</b><div class="mute small">you get chest pain, feel faint, or can't catch your breath on a descent. Ride back out, don't push through.</div></div>
       <div class="stack mt2"><button onclick="Session.endRide()">Finished riding</button></div></div>`;
@@ -1835,7 +2224,7 @@ const Session = {
       const a = S.active; if (!a || a.paused || a.ridePart !== 'ride') return;
       a.rideSec++;
       const el = $('.stopwatch'); if (el) el.textContent = Math.floor(a.rideSec / 60) + ':' + String(a.rideSec % 60).padStart(2, '0');
-      if (HR.live && HR.shouldWarn()) { if (navigator.vibrate) navigator.vibrate([300, 120, 300]); toast('Heart rate very high — ease off and let it come down', 6000); }
+      Session.hrVoice(3);
       if (!HR.live && a.rideSec > 0 && a.rideSec % 600 === 0 && Date.now() - (a.hrAsk || 0) > 480000) { a.hrAsk = Date.now(); if (navigator.vibrate) navigator.vibrate(120); Session.askHR(3); }
       if (a.rideSec % 15 === 0) save();
     }, 1000);
@@ -1860,7 +2249,7 @@ const Session = {
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${esc(s.title)}</b><div class="mute tiny">${Math.min(i, total)}/${total}</div></div><button class="back" onclick="Session.complete()">Finish</button></div>
       ${done ? `<div class="card hero glow" style="min-height:200px"><div class="heroArt">${Art.ribbon()}</div><div class="heroBody"><h2>All done. Breathe.</h2></div></div>` : `<div class="card"><div class="eyebrow">Round ${Math.floor(i / s.moves.length) + 1} · hold ${s.holdSec}s</div><h2>${esc(mv.n)}</h2><div class="figbox mt">${Figure.svg('mob', s.moves[i % s.moves.length])}</div><div class="mute small mt">${esc(mv.cue)}</div></div>`}
       <div class="bar mt"><i style="width:${Math.min(i, total) / total * 100}%"></i></div>
-      <div class="stack mt2">${done ? `<button onclick="Session.complete()">Finish session</button>` : `<button onclick="Session.mobNext()">Done — next move</button>`}</div>
+      <div class="stack mt2">${done ? `<button onclick="Session.complete()">Finish session</button>` : `<button onclick="Session.mobNext()">Done — next move</button><button class="ghost" onclick="Session.adjustSheet()">Adjust time</button>`}</div>
       <div class="list mt2">${s.moves.map((m, k) => `<div class="item" style="${k === i % s.moves.length && !done ? 'border-color:var(--acc)' : ''}"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div></div><span class="num mute">${s.holdSec}s</span></div>`).join('')}</div></div>`;
   },
   mobNext() { S.active.mobIdx++; save(); route(); if (navigator.vibrate) navigator.vibrate(12); },
@@ -1906,6 +2295,300 @@ const Session = {
   },
   close() { S.active = null; save(); go('#/today'); }
 };
+/* =========================================================
+   COACH: voice + on-screen cues, keep-awake, time adjustment,
+   and learning your real pace from the sets you tick.
+   ========================================================= */
+
+/* ---------- voice ---------- */
+const Voice = {
+  v: null,
+  can() { return 'speechSynthesis' in window; },
+  on() { return Voice.can() && !S.flags.mute; },
+  pick() {
+    if (Voice.v) return Voice.v;
+    const vs = speechSynthesis.getVoices() || [];
+    Voice.v = vs.find(v => /^en[-_](US|GB|AU|IE|CA)/i.test(v.lang) && /Samantha|Daniel|Karen|Moira|Serena|Aaron|Nicky/i.test(v.name))
+      || vs.find(v => /^en/i.test(v.lang)) || null;
+    return Voice.v;
+  },
+  say(t) {
+    if (!Voice.on()) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(t); const v = Voice.pick();
+      if (v) u.voice = v; u.lang = (v && v.lang) || 'en-US'; u.rate = 1.03; u.volume = 1;
+      speechSynthesis.speak(u);
+    } catch (e) { }
+  },
+  toggle() { S.flags.mute = !S.flags.mute; save(); if (!S.flags.mute) Voice.say('Voice on'); else try { speechSynthesis.cancel(); } catch (e) { } route(); }
+};
+if (Voice.can()) try { speechSynthesis.onvoiceschanged = () => { Voice.v = null; }; } catch (e) { }
+
+function muteBtn() { return `<button class="sec" onclick="Voice.toggle()" aria-label="${S.flags.mute ? 'Voice off' : 'Voice on'}">${S.flags.mute ? '🔇 Off' : '🔊 On'}</button>`; }
+
+/* ---------- on-screen flash ---------- */
+function cueFlash(title, sub, kind) {
+  let el = document.getElementById('cue');
+  if (!el) { el = document.createElement('div'); el.id = 'cue'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'assertive'); document.body.appendChild(el); }
+  el.className = 'cue ' + (kind || '');
+  el.innerHTML = `<div class="cueT">${esc(title)}</div>${sub ? `<div class="cueS">${esc(sub)}</div>` : ''}`;
+  void el.offsetWidth; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+/* ---------- keep the screen on during a session ---------- */
+const Awake = {
+  s: null,
+  async on() { try { if ('wakeLock' in navigator && !Awake.s) { Awake.s = await navigator.wakeLock.request('screen'); Awake.s.addEventListener('release', () => { Awake.s = null; }); } } catch (e) { } },
+  off() { try { if (Awake.s) Awake.s.release(); } catch (e) { } Awake.s = null; }
+};
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.active && S.active.stage !== 'done' && S.active.stage !== 'precheck') Awake.on(); });
+
+/* ---------- words for the cues ---------- */
+function spokenTime(sec) {
+  const m = Math.floor(sec / 60), r = sec % 60;
+  if (!m) return sec + ' seconds';
+  const mw = m === 1 ? 'one minute' : m + ' minutes';
+  if (!r) return mw;
+  if (r === 30) return m === 1 ? 'a minute and a half' : m + ' and a half minutes';
+  return mw + ' ' + r + ' seconds';
+}
+function shortTime(sec) { const m = Math.floor(sec / 60), r = sec % 60; return m ? (r ? m + ':' + String(r).padStart(2, '0') + ' min' : m + ' min') : sec + ' sec'; }
+function phaseWords(ph) {
+  const l = (ph.label || '').toLowerCase();
+  if (ph.k === 'hard') return /tempo|threshold/.test(l) ? 'Tempo. Strong and steady' : 'Push hard';
+  if (/warm/.test(l)) return 'Warm up. Easy pace';
+  if (/cool/.test(l)) return 'Cool down. Bring it right down';
+  if (/recover|easy between/.test(l)) return 'Recover. Nice and easy';
+  return ph.label;
+}
+function phaseTitle(ph) {
+  const l = (ph.label || '').toLowerCase();
+  if (ph.k === 'hard') return /tempo|threshold/.test(l) ? 'TEMPO' : 'PUSH';
+  if (/warm/.test(l)) return 'WARM UP';
+  if (/cool/.test(l)) return 'COOL DOWN';
+  if (/recover/.test(l)) return 'RECOVER';
+  return (ph.label || 'GO').toUpperCase();
+}
+
+/* ---------- pace: minutes per set, learned from your ticks ---------- */
+function learnPace(a) {
+  const ts = [];
+  (a.entries || []).forEach(e => e.sets.forEach(s => { if (s.done && s.at) ts.push(s.at); }));
+  ts.sort((x, y) => x - y);
+  const gaps = [];
+  for (let i = 1; i < ts.length; i++) { const g = (ts[i] - ts[i - 1]) / 60000; if (g > 0.4 && g < 8) gaps.push(g); }
+  if (gaps.length < 4) return null;                        // ticked all at the end, or too few sets: learn nothing
+  gaps.sort((x, y) => x - y);
+  const med = gaps[Math.floor(gaps.length / 2)];
+  const prev = S.pace && S.pace.minPerSet;
+  S.pace = { minPerSet: +(prev ? prev * 0.65 + med * 0.35 : med).toFixed(2), n: ((S.pace && S.pace.n) || 0) + 1, at: todayStr() };
+  return med;
+}
+
+/* ---------- "your sessions usually run X" suggestion ---------- */
+function lengthSuggestion() {
+  const p = S.profile; if (!p) return null;
+  const rec = S.sessions.filter(s => !s.ride && s.kind !== 'ride').slice(-6);
+  if (rec.length < 4) return null;
+  const avg = rec.reduce((n, s) => n + (s.minutes || 0), 0) / rec.length;
+  const off = rec.filter(s => Math.abs((s.minutes || 0) - p.minutes) >= 10 && Math.sign(s.minutes - p.minutes) === Math.sign(avg - p.minutes)).length;
+  if (Math.abs(avg - p.minutes) < 10 || off < 4) return null;
+  if (S.seen.lenDismissed && daysBetween(S.seen.lenDismissed, todayStr()) < 21) return null;
+  const opts = [20, 30, 45, 60, 75, 90];
+  const to = opts.reduce((b, m) => Math.abs(m - avg) < Math.abs(b - avg) ? m : b, opts[0]);
+  if (to === p.minutes) return null;
+  return { avg: Math.round(avg), to, n: rec.length, longer: avg > p.minutes };
+}
+function lengthCard() {
+  const s = lengthSuggestion(); if (!s) return '';
+  return `<div class="card mb" style="border-color:var(--acc)"><b>Your sessions are running ${s.longer ? 'longer' : 'shorter'}</b>
+    <div class="mute small">Your last ${s.n} averaged ${s.avg} min. Your plan assumes ${S.profile.minutes}. Plans fit better when they match real life.</div>
+    <div class="row mt"><button class="sm" onclick="Coach.useLength(${s.to})">Make ${fmtMins(s.to)} my usual</button><button class="sm ghost" onclick="Coach.dismissLength()">Not now</button></div></div>`;
+}
+const Coach = {
+  useLength(m) { S.profile.minutes = m; buildProgram(); save(); toast('Usual length is now ' + fmtMins(m) + '. Plan rebuilt.'); route(); },
+  dismissLength() { S.seen.lenDismissed = todayStr(); save(); route(); }
+};
+
+/* ---------- session patches ---------- */
+Object.assign(Session, {
+  elapsedMin() { return (Date.now() - S.active.startedAt) / 60000; },
+  pace() { return clamp((S.pace && S.pace.minPerSet) || 2.3, 1.2, 5); },
+  leftSets(a) { return a.entries.reduce((n, e) => n + e.sets.filter(s => !s.done).length, 0); },
+  projected() {
+    const a = S.active, exLeft = a.entries.filter(e => e.sets.some(s => !s.done)).length;
+    const tail = a.sess.cardio && a.stage !== 'tail' ? a.sess.cardio.minutes : 0;
+    return Session.elapsedMin() + Session.leftSets(a) * Session.pace() + exLeft * 0.5 + tail;
+  },
+  exMinutes(e) { return e.sets.filter(s => !s.done).length * Session.pace() + 0.5; },
+
+  /* strength: tick records the time, which is how pace is learned */
+  tick(ei, si) {
+    const s = S.active.entries[ei].sets[si]; s.done = !s.done; s.at = s.done ? Date.now() : null;
+    save(); route(); if (navigator.vibrate) navigator.vibrate(12);
+  },
+
+  /* the "adjust" sheet — same for every session type */
+  adjustSheet() {
+    const a = S.active, el = Math.round(Session.elapsedMin());
+    let proj, now;
+    if (a.sess.kind === 'strength' && a.stage !== 'tail') proj = Math.round(Session.projected());
+    else if (a.sess.kind === 'mobility') { const s = a.sess, left = Math.max(0, s.moves.length * s.rounds - a.mobIdx); proj = Math.round(el + left * (s.holdSec + 15) / 60); }
+    else if (a.sess.kind === 'ride') proj = a.sess.ride.minutes;
+    else { const c = a.sess.cardio; proj = Math.round(el + (c.phases.slice(a.phaseIdx + 1).reduce((n, p) => n + p.sec, 0) + (a.phaseLeft || 0)) / 60); }
+    now = a.minutes || proj;
+    const opts = [10, 15, 20, 30, 45, 60, 75, 90, 120].filter(m => m >= el + 5);
+    sheet(h`<h3>Change today's length</h3>
+      <p class="mute small">${el} min in. ${a.sess.kind === 'ride' ? 'Planned ride: ' + proj + ' min.' : 'At your pace this finishes around ' + proj + ' min.'} Pick a new total and the rest is rebuilt to fit.</p>
+      <div class="chips mt">${opts.map(m => `<span class="chip ${now === m ? 'on' : ''}" onclick="Session.retime(${m})">${fmtMins(m)}</span>`).join('')}</div>
+      ${opts.length ? '' : '<p class="mute small">Not much room left to shorten — tap Finish when you are ready.</p>'}
+      <button class="ghost mt2" onclick="closeSheet()">Keep as is</button>`);
+  },
+  retime(target) {
+    const a = S.active; a.minutes = target; closeSheet();
+    let msg;
+    if (a.sess.kind === 'strength' && a.stage !== 'tail') msg = Session.retimeStrength(target);
+    else if (a.sess.kind === 'mobility') msg = Session.retimeMob(target);
+    else if (a.sess.kind === 'ride') { a.sess.ride.minutes = Math.max(10, target - 10); msg = 'Planned ride: ' + fmtMins(a.sess.ride.minutes) + ', plus stretching.'; }
+    else msg = Session.retimeCardio(target);
+    save(); route(); if (msg) toast(msg, 4200);
+  },
+  retimeStrength(target) {
+    const a = S.active, pace = Session.pace();
+    const tail = a.sess.cardio ? a.sess.cardio.minutes : 0;
+    const budget = target - Session.elapsedMin() - tail;
+    const need = () => Session.leftSets(a) * pace + a.entries.filter(e => e.sets.some(s => !s.done)).length * 0.5;
+    const dropped = [], added = []; let setsCut = 0, setsAdded = 0, guard = 0;
+    // shorter: drop untouched exercises from the end (least important last), then trailing sets
+    while (need() > budget + 1 && guard++ < 60) {
+      const untouchedIdx = (() => { for (let i = a.entries.length - 1; i >= 0; i--) if (!a.entries[i].sets.some(s => s.done)) return i; return -1; })();
+      const untouchedCount = a.entries.filter(e => !e.sets.some(s => s.done)).length;
+      if (untouchedIdx >= 0 && (untouchedCount > 1 || need() - a.entries[untouchedIdx].sets.length * pace >= budget - pace)) {
+        dropped.push(EXMAP[a.entries[untouchedIdx].exId].n); a.entries.splice(untouchedIdx, 1); continue;
+      }
+      let best = null;
+      a.entries.forEach(e => { const u = e.sets.filter(s => !s.done).length; if (u && (!best || u >= best.u)) best = { e, u }; });
+      if (!best) break;
+      const last = best.e.sets.map(s => s.done).lastIndexOf(false);
+      best.e.sets.splice(last, 1); setsCut++;
+    }
+    // longer: add sets up to a cap, then add new exercises that respect today's injuries
+    guard = 0;
+    while (need() < budget - pace * 1.5 && guard++ < 60) {
+      const cap = e => (EXMAP[e.exId].reg.length >= 2 ? 5 : 4);
+      const grow = a.entries.filter(e => e.sets.length < cap(e)).sort((x, y) => x.sets.length - y.sets.length)[0];
+      if (grow && grow.sets.length < 4) { const l = grow.sets[grow.sets.length - 1]; grow.sets.push({ reps: l.reps, weight: l.weight, rpe: null, done: false }); setsAdded++; continue; }
+      const used = new Set(a.entries.map(e => e.exId));
+      const pats = (PATTERNS[a.sess.type] || []).concat(['core', 'glute', 'rearDelt', 'biceps', 'triceps', 'carry', 'lunge', 'shoulderAcc']);
+      let pick = null;
+      for (const pt of pats) { const c = candidates(pt, S.profile, used, new Set(a.injuries || [])); if (c && c.length) { pick = c[0]; break; } }
+      if (!pick) { if (grow) { const l = grow.sets[grow.sets.length - 1]; grow.sets.push({ reps: l.reps, weight: l.weight, rpe: null, done: false }); setsAdded++; continue; } break; }
+      const lo = pick.timed ? 20 : 8, hi = pick.timed ? 40 : 12;
+      const entry = { exId: pick.id, lo, hi, subbed: null, sets: [] };
+      const t = targetFor(Object.assign({ sets: 2 }, entry));
+      entry.sets = [0, 1].map(() => ({ reps: t.reps, weight: t.weight, rpe: null, done: false }));
+      a.entries.push(entry); added.push(pick.n);
+      if (!S.loads[pick.id] && !pick.bwOnly) a.notes.push(pick.n + ': start light, find your weight on set 1');
+    }
+    const bits = [];
+    if (dropped.length) bits.push('dropped ' + dropped.join(', '));
+    if (setsCut) bits.push(setsCut + ' fewer set' + (setsCut > 1 ? 's' : ''));
+    if (added.length) bits.push('added ' + added.join(', '));
+    if (setsAdded) bits.push(setsAdded + ' extra set' + (setsAdded > 1 ? 's' : ''));
+    a.notes.push('Re-timed to ' + fmtMins(target));
+    return bits.length ? 'Now ' + fmtMins(target) + ': ' + bits.join(' · ') : 'Already fits ' + fmtMins(target) + '.';
+  },
+  retimeCardio(target) {
+    const a = S.active, c = a.sess.cardio, p = S.profile;
+    const remSec = Math.round(target * 60 - (Date.now() - a.startedAt) / 1000) - (a.phaseLeft || 0);
+    const kept = c.phases.slice(0, a.phaseIdx + 1);
+    let rest = [];
+    if (remSec >= 150) {
+      const code = a.stage === 'tail' ? 'CL' : (a.sess.type || 'CL');
+      const fresh = buildCardio(code, Object.assign({}, p, { minutes: Math.round(remSec / 60) + 5 }), a.idx);
+      rest = (fresh.cardio || fresh).phases.slice(1);
+    } else if (remSec >= 30) rest = [{ k: 'easy', label: 'Cool down', sec: remSec }];
+    c.phases = kept.concat(rest);
+    const tot = c.phases.reduce((n, x) => n + x.sec, 0);
+    return 'Rebuilt to fit: about ' + fmtMins(Math.round(tot / 60)) + ' of cardio in total.';
+  },
+  retimeMob(target) {
+    const a = S.active, s = a.sess;
+    const doneMoves = a.mobIdx, remSec = target * 60 - (Date.now() - a.startedAt) / 1000;
+    const want = Math.max(1, Math.round(remSec / (s.holdSec + 15)));
+    const flat = []; for (let r = 0; r < s.rounds; r++) flat.push(...s.moves);
+    const keep = flat.slice(0, doneMoves);
+    const pool = MOB.filter(m => !(m.reg || []).some(x => (a.injuries || []).includes(x))).map(m => m.id);
+    const next = []; let i = 0;
+    while (next.length < want && i < 200) { next.push(pool.length ? pool[(doneMoves + i) % pool.length] : flat[i % flat.length]); i++; }
+    s.moves = keep.concat(next); s.rounds = 1;
+    return 'Now ' + next.length + ' more moves, about ' + fmtMins(target) + ' total.';
+  },
+
+  /* cardio clock: timestamp based, so a locked phone catches up instead of drifting */
+  phaseCue(ph, first) {
+    if (!ph) return;
+    cueFlash(phaseTitle(ph), shortTime(ph.sec), ph.k === 'hard' ? 'hot' : 'easy');
+    Voice.say(phaseWords(ph) + '. ' + spokenTime(ph.sec) + '.');
+    if (!first && navigator.vibrate) navigator.vibrate([80, 60, 80]);
+  },
+  tickStart() {
+    clearInterval(TMR);
+    const a = S.active; if (!a) return; const c = a.sess.cardio; if (!c) return;
+    if (a.phaseLeft == null) { a.phaseLeft = c.phases[0].sec; Session.phaseCue(c.phases[0], true); }
+    a.lastTick = Date.now(); Awake.on();
+    TMR = setInterval(() => {
+      const a = S.active; if (!a) { clearInterval(TMR); return; }
+      const now = Date.now();
+      if (a.paused) { a.lastTick = now; return; }
+      let dt = Math.floor((now - a.lastTick) / 1000); if (dt < 1) return;
+      a.lastTick += dt * 1000;
+      const live = dt <= 5; let changed = false;   // big jumps = phone was asleep: catch up silently, then cue where we are
+      while (dt-- > 0) {
+        a.phaseLeft--;
+        const cur = c.phases[a.phaseIdx], nx = c.phases[a.phaseIdx + 1];
+        if (live && a.phaseLeft === 10 && nx && nx.k === 'hard' && cur.k !== 'hard') { cueFlash('10 seconds', 'then ' + phaseTitle(nx).toLowerCase(), 'warn'); Voice.say('Ten seconds. Get ready.'); }
+        if (a.phaseLeft <= 0) {
+          a.phaseIdx++;
+          if (a.phaseIdx >= c.phases.length) { clearInterval(TMR); cueFlash('DONE', 'Nice work', 'easy'); Voice.say('Done. Nice work.'); if (navigator.vibrate) navigator.vibrate([200, 100, 200]); Session.finishCardio(); return; }
+          a.phaseLeft = c.phases[a.phaseIdx].sec; changed = true;
+        }
+      }
+      if (changed) { Session.phaseCue(c.phases[a.phaseIdx]); save(); route(); return; }
+      const t = $('#tm'); if (t) t.textContent = Math.floor(a.phaseLeft / 60) + ':' + String(a.phaseLeft % 60).padStart(2, '0');
+      Session.hrVoice(targetZone(c.phases[a.phaseIdx].k, c.structure));
+      if (a.phaseLeft % 10 === 0) save();
+    }, 250);
+  },
+  hrVoice(z) {
+    if (!HR.live || HR.bpm == null) return;
+    if (HR.shouldWarn()) { if (navigator.vibrate) navigator.vibrate([300, 120, 300]); toast('Heart rate very high — ease off and let it come down', 6000); if (Date.now() - (HR.saidAt || 0) > 30000) { HR.saidAt = Date.now(); Voice.say('Heart rate very high. Ease off.'); } return; }
+    const adv = HR.advice(z); if (!adv || adv.k === 'ok') { HR.saidK = 'ok'; return; }
+    if (adv.k !== HR.saidK && Date.now() - (HR.saidAt || 0) > 45000) { HR.saidK = adv.k; HR.saidAt = Date.now(); Voice.say(adv.t); }
+  },
+  skipPhase() {
+    const a = S.active; a.phaseIdx++;
+    if (a.phaseIdx >= a.sess.cardio.phases.length) { Session.finishCardio(); return; }
+    a.phaseLeft = a.sess.cardio.phases[a.phaseIdx].sec; Session.phaseCue(a.sess.cardio.phases[a.phaseIdx]); save(); route();
+  }
+});
+
+/* wrap lifecycle: stay awake while training; learn pace when done; let go of the screen after */
+(function () {
+  const _begin = Session.begin, _complete = Session.complete, _abandon = Session.abandon;
+  Session.begin = function () { Awake.on(); if (Voice.on() && S.active && S.active.base && S.active.base.kind === 'strength') { /* strength has no timer; stay quiet */ } return _begin.apply(Session, arguments); };
+  Session.complete = function () {
+    const a = S.active;
+    const med = a && a.sess && a.sess.kind === 'strength' ? learnPace(a) : null;
+    _complete.apply(Session, arguments);
+    const rec = S.sessions[S.sessions.length - 1];
+    if (rec && med) { rec.pace = +med.toFixed(2); save(); }
+    Awake.off(); try { speechSynthesis.cancel(); } catch (e) { }
+  };
+  Session.abandon = function () { const r = _abandon.apply(Session, arguments); if (!S.active) { Awake.off(); try { speechSynthesis.cancel(); } catch (e) { } } return r; };
+})();
 /* =========================================================
    PROGRESS
    ========================================================= */
@@ -2019,6 +2702,8 @@ const More = {
       <div class="card"><b>Settings</b>
         <div class="between mt"><div><div>Calorie guidance</div><div class="mute tiny">Hide if you'd rather train without numbers</div></div><button class="sm ${f.showCal ? '' : 'sec'}" onclick="More.flag('showCal')">${f.showCal ? 'On' : 'Off'}</button></div>
         <div class="between mt"><div><div>28-day weight window</div><div class="mute tiny">Smooths monthly cycles; slower to react</div></div><button class="sm ${f.cycle28 ? '' : 'sec'}" onclick="More.flag('cycle28')">${f.cycle28 ? 'On' : 'Off'}</button></div>
+        <div class="between mt"><div><div>Voice cues</div><div class="mute tiny">Spoken interval changes. Turn the volume up.</div></div><button class="sm ${f.mute ? 'sec' : ''}" onclick="Voice.toggle()">${f.mute ? 'Off' : 'On'}</button></div>
+        <div class="between mt"><div><div>Your pace</div><div class="mute tiny">${S.pace ? 'About ' + S.pace.minPerSet.toFixed(1) + ' min per set, learned from ' + S.pace.n + ' session' + (S.pace.n > 1 ? 's' : '') : 'Learned after a few strength sessions'}</div></div><span></span></div>
         <div class="between mt"><div><div>Calm mode</div><div class="mute tiny">Turns off animations</div></div><button class="sm ${f.calm ? '' : 'sec'}" onclick="More.flag('calm')">${f.calm ? 'On' : 'Off'}</button></div>
         <div class="mt"><label>Weight-change pace cap</label><div class="chips">${[['gentle', 'Gentle · 0.5%/wk'], ['standard', 'Standard · 0.75%/wk'], ['aggressive', 'Max · 1%/wk']].map(([k, l]) => `<span class="chip ${f.pace === k ? 'on' : ''}" onclick="S.flags.pace='${k}';save();route()">${l}</span>`).join('')}</div></div>
       </div>
@@ -2048,9 +2733,9 @@ const ProfileEdit = {
       <div><label>Goal</label><div class="chips">${[['general', 'General'], ['cardio', 'Cardio'], ['strength', 'Strength'], ['flex', 'Flexibility']].map(([k, l]) => `<span class="chip ${p.goal === k ? 'on' : ''}" onclick="S.profile.goal='${k}';save();route()">${l}</span>`).join('')}</div></div>
       <div><label>Days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${p.days.includes(i) ? 'on' : ''}" onclick="ProfileEdit.togDay(${i})">${n}</button>`).join('')}</div></div>
       <div><label>Minutes</label><div class="chips">${[20, 30, 45, 60, 75].map(m => `<span class="chip ${p.minutes === m ? 'on' : ''}" onclick="S.profile.minutes=${m};save();route()">${m}</span>`).join('')}</div></div>
-      <div><label>Where</label><div class="chips">${[['gym', 'Gym'], ['home_eq', 'Home + gear'], ['home_none', 'Bodyweight']].map(([k, l]) => `<span class="chip ${p.setting === k ? 'on' : ''}" onclick="S.profile.setting='${k}';save();route()">${l}</span>`).join('')}</div></div>
-      <div><label>Equipment</label><div class="chips">${EQUIP.map(([k, l]) => `<span class="chip ${p.equipment.includes(k) ? 'on' : ''}" onclick="ProfileEdit.togEq('${k}')">${l}</span>`).join('')}</div></div>
-      ${S.profile.equipment.includes('mtb') ? `<div><label>Usual ride days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${(p.mtbDays || []).includes(i) ? 'on' : ''}" onclick="ProfileEdit.togMtb(${i})" ${p.days.includes(i) ? '' : 'style="opacity:.4"'}>${n}</button>`).join('')}</div><div class="mute tiny mt">A ride day is the ride plus stretching. You can switch any day to a ride on the day itself.</div></div>
+      <div><label>Where</label><div class="chips">${[['gym', 'Gym'], ['home_eq', 'Home + gear'], ['home_none', 'Home + no gear']].map(([k, l]) => `<span class="chip ${p.setting === k ? 'on' : ''}" onclick="S.profile.setting='${k}';save();route()">${l}</span>`).join('')}</div></div>
+      ${p.setting === 'home_none' ? `<div class="card" style="background:var(--bg2)"><b>Bodyweight only</b><div class="mute small">No equipment is used with this option. To add a dumbbell, band or bike, pick Home + gear.</div></div>` : `<div><label>Equipment</label><div class="chips">${EQUIP.map(([k, l]) => `<span class="chip ${p.equipment.includes(k) ? 'on' : ''}" onclick="ProfileEdit.togEq('${k}')">${l}</span>`).join('')}</div></div>`}
+      ${p.setting !== 'home_none' && S.profile.equipment.includes('mtb') ? `<div><label>Usual ride days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${(p.mtbDays || []).includes(i) ? 'on' : ''}" onclick="ProfileEdit.togMtb(${i})" ${p.days.includes(i) ? '' : 'style="opacity:.4"'}>${n}</button>`).join('')}</div><div class="mute tiny mt">A ride day is the ride plus stretching. You can switch any day to a ride on the day itself.</div></div>
       <div><label>Typical ride length</label><div class="chips">${[45, 60, 90, 120, 180].map(m => `<span class="chip ${p.rideMinutes === m ? 'on' : ''}" onclick="S.profile.rideMinutes=${m};save();route()">${fmtMins(m)}</span>`).join('')}</div></div>` : ''}
       <div><label>Cardio level</label><div class="chips">${[['beg', 'Getting started'], ['int', 'Some base'], ['adv', 'Fit']].map(([k, l]) => `<span class="chip ${p.cardioLevel === k ? 'on' : ''}" onclick="S.profile.cardioLevel='${k}';save();route()">${l}</span>`).join('')}</div></div>
       <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="S.profile.targetKg=toKg(+this.value);save()"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="S.profile.age=+this.value;save()"></div></div>
