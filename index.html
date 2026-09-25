@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Tailored">
@@ -91,6 +91,7 @@ button.icon{width:auto;padding:8px 12px;background:var(--field);color:var(--ink)
 button:disabled{opacity:.45}
 button:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
 label{display:block;color:var(--mute);font-size:.86rem;margin:0 0 6px}
+button,.chip,.ok,.item,.optcard,a,[onclick]{touch-action:manipulation}
 input,select,textarea{width:100%;font-family:inherit;font-size:1.05rem;color:var(--ink);background:var(--field);border:1px solid var(--line);border-radius:12px;padding:13px 14px;-webkit-appearance:none;appearance:none}
 input:focus,select:focus{outline:2px solid var(--acc);border-color:transparent}
 input[type=number]{font-variant-numeric:tabular-nums}
@@ -295,10 +296,34 @@ function defaultState() {
     pace: null
   };
 }
+/* make any saved or imported object safe to use: right types everywhere, defaults filled in */
+function normalizeState(s) {
+  const d = defaultState(), arr = v => Array.isArray(v) ? v : [], obj = v => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+  const out = Object.assign(d, s, {
+    shortcuts: Object.assign(defaultState().shortcuts, obj(s.shortcuts)), flags: Object.assign(defaultState().flags, obj(s.flags)),
+    seen: Object.assign(defaultState().seen, obj(s.seen)), scLinks: obj(s.scLinks), scBuilt: obj(s.scBuilt),
+    sessions: arr(s.sessions).filter(x => x && typeof x.date === 'string'), weights: arr(s.weights).filter(w => w && typeof w.date === 'string' && isFinite(w.kg)),
+    readiness: arr(s.readiness).filter(r => r && typeof r.date === 'string'), intake: arr(s.intake), adjust: arr(s.adjust),
+    calib: obj(s.calib), loads: obj(s.loads), swaps: obj(s.swaps), intensity: isFinite(s.intensity) ? clamp(s.intensity, 0.7, 1.3) : 1
+  });
+  if (out.profile && (typeof out.profile !== 'object' || !Array.isArray(out.profile.days))) out.profile = null;
+  if (out.profile && !Array.isArray(out.profile.equipment)) out.profile.equipment = [];
+  if (out.program && !(out.program.week && Array.isArray(out.program.week))) out.program = null;
+  if (out.active && !(out.active.base && out.active.stage)) out.active = null;
+  return out;
+}
 let S = load();
 function load() {
-  try { const raw = localStorage.getItem(KEY); if (raw) { const s = JSON.parse(raw); return Object.assign(defaultState(), s, { shortcuts: Object.assign(defaultState().shortcuts, s.shortcuts || {}), flags: Object.assign(defaultState().flags, s.flags || {}), scLinks: s.scLinks || {}, scBuilt: s.scBuilt || {} }); } } catch (e) { console.warn('load failed', e); }
-  return defaultState();
+  let raw = null;
+  try { raw = localStorage.getItem(KEY); } catch (e) { return defaultState(); }
+  if (!raw) return defaultState();
+  try { return normalizeState(JSON.parse(raw)); }
+  catch (e) {
+    // never overwrite data we couldn't read: park it where a backup import can still reach it
+    try { localStorage.setItem(KEY + '_corrupt', raw); } catch (e2) { }
+    load.failed = true; console.warn('load failed', e);
+    return defaultState();
+  }
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save. Storage may be full or blocked.'); } }
 
@@ -539,27 +564,24 @@ function buildCardio(type, p, dayIdx, minutesOverride) {
   const lvl = p.cardioLevel || 'beg';
   let phases = [], label = '';
   const warmMin = Math.min(5, Math.round(mins * 0.15));
-  const coolMin = Math.min(4, Math.round(mins * 0.1));
-  const main = mins - warmMin - coolMin;
+  let coolMin = Math.min(4, Math.round(mins * 0.1));
+  const main = Math.max(1, mins - warmMin - coolMin);
   phases.push({ k: 'easy', label: 'Warm up', sec: warmMin * 60 });
-  if (type === 'CL') {
+  // interval blocks that fit the time you have: [hard sec, easy sec] per level
+  const blk = { beg: [60, 120, 'Push', 'Alternating effort. Hard means breathing heavily but in control.'], int: [180, 120, 'Tempo', 'Tempo blocks. Hard is comfortably uncomfortable, not all-out.'], adv: [150, 90, 'Hard', 'Intervals. Hard is near your limit for the block. Recover fully.'] }[lvl] || [60, 120, 'Push', ''];
+  const reps = type === 'CL' ? 0 : Math.floor(main * 60 / (blk[0] + blk[1]));
+  if (!reps) {
     label = 'Steady, easy effort. You should be able to talk in full sentences.';
     phases.push({ k: 'easy', label: 'Steady easy', sec: main * 60 });
-  } else if (lvl === 'beg') {
-    label = 'Alternating effort. Hard means breathing heavily but in control.';
-    const reps = Math.max(2, Math.floor(main / 3));
-    for (let i = 0; i < reps; i++) { phases.push({ k: 'hard', label: 'Push', sec: 60 }); phases.push({ k: 'easy', label: 'Recover', sec: 120 }); }
-  } else if (lvl === 'int') {
-    label = 'Tempo blocks. Hard is comfortably uncomfortable, not all-out.';
-    const reps = Math.max(2, Math.floor(main / 5));
-    for (let i = 0; i < reps; i++) { phases.push({ k: 'hard', label: 'Tempo', sec: 180 }); phases.push({ k: 'easy', label: 'Recover', sec: 120 }); }
   } else {
-    label = 'Intervals. Hard is near your limit for the block. Recover fully.';
-    const reps = Math.max(3, Math.floor(main / 4));
-    for (let i = 0; i < reps; i++) { phases.push({ k: 'hard', label: 'Hard', sec: 150 }); phases.push({ k: 'easy', label: 'Recover', sec: 90 }); }
+    label = blk[3];
+    for (let i = 0; i < reps; i++) { phases.push({ k: 'hard', label: blk[2], sec: blk[0] }); phases.push({ k: 'easy', label: 'Recover', sec: blk[1] }); }
+    const left = main * 60 - reps * (blk[0] + blk[1]);
+    if (left >= 60) phases.push({ k: 'easy', label: 'Steady easy', sec: left });
   }
   phases.push({ k: 'easy', label: 'Cool down', sec: coolMin * 60 });
-  return { modeId: mode ? mode.id : 'walk', minutes: mins, phases, label, structure: type === 'CL' ? 'steady' : 'intervals' };
+  phases = phases.filter(ph => ph.sec > 0);
+  return { modeId: mode ? mode.id : 'walk', minutes: mins, phases, label, structure: reps ? 'intervals' : 'steady' };
 }
 function buildRide(p, dayIdx, minutesOverride) {
   const mins = minutesOverride || p.rideMinutes || 90;
@@ -887,6 +909,7 @@ const Bridge = {
   },
   parseWeights(text) {
     let added = 0; const undated = [];
+    text = text.replace(/(\d),(\d{1,2})(?!\d)/g, '$1.$2');   // 175,2 → 175.2
     const lines = text.split(/\n|;/).map(s => s.trim()).filter(Boolean);
     const unitIsLb = /lb/i.test(text) || (!/kg/i.test(text) && useLb());
     lines.forEach(line => {
@@ -996,7 +1019,7 @@ const Art = {
   hero(kind, opts) {
     opts = opts || {};
     if (kind === 'strength') return Art.muscle();
-    if (kind === 'cardio') return Art.bike(!!opts.fast);
+    if (kind === 'cardio' || kind === 'ride') return Art.bike(!!opts.fast);
     if (kind === 'mobility') return Art.ribbon();
     if (kind === 'rest') return h`<svg class="stage" viewBox="0 0 300 200" aria-hidden="true"><circle class="orb" cx="150" cy="100" r="60" fill="var(--acc2)" opacity=".18"/><circle class="orb" style="animation-delay:-2s" cx="150" cy="100" r="36" fill="var(--acc)" opacity=".28"/><circle cx="150" cy="100" r="14" fill="var(--ink)" opacity=".9"/></svg>`;
     return Art.rocket(false);
@@ -1017,7 +1040,12 @@ const ICON = {
    ========================================================= */
 const LEN = { torso: 40, neck: 15, head: 11, ua: 24, fa: 24, th: 32, sh: 32, ft: 13 };
 const GROUND = 176, CX = 100;
+/* playback rate, in authored milliseconds per real millisecond.
+   0.5 = 50% faster than the app played before (it used to run at about a third of authored speed). */
+const ANIM_RATE = 0.5;
 
+/* the point of the feet that is carrying the weight right now */
+function lowestFoot(s) { let k = 'ank', y = -1e9; for (const j of ['ank', 'toe', 'ank2', 'toe2']) if (s[j][1] > y + 0.05) { y = s[j][1]; k = j; } return k; }
 function pol(p, a, l) { const r = a * Math.PI / 180; return [p[0] + Math.cos(r) * l, p[1] + Math.sin(r) * l]; }
 function lerpA(a, b, t) { let d = b - a; while (d > 180) d -= 360; while (d < -180) d += 360; return a + d * t; }
 function ease(t) { return t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
@@ -1047,6 +1075,8 @@ function resolveIK(p) {
   const pel = [q.px, q.py], sho = pol(pel, q.tor, LEN.torso);
   const rel = r => r && [sho[0] + r[0], sho[1] + r[1]];
   const arm = (T, ka, kf) => { if (!T) return; const r = solve2(sho, T, LEN.ua, LEN.fa, 1); q[ka] = r.a; q[kf] = r.b; };
+  if (Array.isArray(q.T)) { const d = pol([0, 0], q.ft || 0, LEN.ft); q.F = [q.T[0] - d[0], q.T[1] - d[1]]; }
+  if (Array.isArray(q.T2)) { const d = pol([0, 0], q.ft2 != null ? q.ft2 : (q.ft || 0), LEN.ft); q.F2 = [q.T2[0] - d[0], q.T2[1] - d[1]]; }
   const leg = (T, kt, ks) => { if (!T) return; const r = solve2(pel, T, LEN.th, LEN.sh, -1); q[kt] = r.a; q[ks] = r.b; };
   arm(q.H || rel(q.Hs), 'ua', 'fa'); arm(q.H2 || rel(q.H2s), 'ua2', 'fa2');
   leg(q.F, 'th', 'sh'); leg(q.F2, 'th2', 'sh2');
@@ -1084,6 +1114,10 @@ function place(p) {
     if (lx + sx < 4) sx += 4 - (lx + sx);
     if (sx || sy) for (const k in out) out[k] = [out[k][0] + sx, out[k][1] + sy];
   }
+  if (!p.ik && p.pinK) {
+    const px = p.pinK === 'mid' ? (out.ank[0] + out.ank2[0]) / 2 : out[p.pinK][0], sx = p.pinX - px;
+    for (const k in out) out[k] = [out[k][0] + sx, out[k][1]];
+  }
   out._p = p;
   return out;
 }
@@ -1093,7 +1127,13 @@ function mixPose(a, b, t) {
   keys.forEach(k => {
     const av = a[k], bv = b[k];
     if (Array.isArray(av) || Array.isArray(bv)) {           // IK targets: only when both frames pin the limb
-      if (Array.isArray(av) && Array.isArray(bv)) o[k] = [av[0] + (bv[0] - av[0]) * t, av[1] + (bv[1] - av[1]) * t];
+      if (Array.isArray(av) && Array.isArray(bv)) {
+        const gy = k[0] === 'F' ? GROUND - 9 : GROUND - 4, ga = av[1] >= gy, gb = bv[1] >= gy;
+        let tx = t, ty = t;
+        if (ga && !gb) { tx = t * t; ty = 1 - (1 - t) * (1 - t); }
+        else if (!ga && gb) { tx = 1 - (1 - t) * (1 - t); ty = t * t; }
+        o[k] = [av[0] + (bv[0] - av[0]) * tx, av[1] + (bv[1] - av[1]) * ty];
+      }
       return;
     }
     if (typeof av === 'number' && typeof bv === 'number') o[k] = LINEAR.has(k) ? av + (bv - av) * t : lerpA(av, bv, t);
@@ -1288,6 +1328,15 @@ function faceSvg(s) {
   return `<circle cx="${eye[0].toFixed(1)}" cy="${eye[1].toFixed(1)}" r="1.9" fill="#1a1f33"/><circle cx="${nose[0].toFixed(1)}" cy="${nose[1].toFixed(1)}" r="2.6" fill="#cfd4e4"/>`;
 }
 
+/* ---------- floor: solid, or dashed and scrolling for moves done on the spot ---------- */
+function groundSvg(s, a) {
+  if (a && a.loco) {
+    const g = ((s._g || 0) % 16 + 16) % 16;
+    return `<line x1="-60" y1="${GROUND + 3}" x2="260" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-dasharray="10 6" stroke-dashoffset="${(-g).toFixed(1)}"/>`;
+  }
+  return `<line x1="-40" y1="${GROUND + 3}" x2="240" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-linecap="round"/>`;
+}
+
 /* ---------- scenery at fixed world positions ---------- */
 const SCENE_BOX = {
   benchFlat: [34, 140, 130, 176], benchInc: [60, 90, 150, 176], seatBack: [70, 70, 130, 176], seatPad: [70, 2, 140, 176],
@@ -1353,7 +1402,7 @@ function figSvgStick(s, a) {
   const L = (p, q, w, c, o) => `<line x1="${p[0].toFixed(1)}" y1="${p[1].toFixed(1)}" x2="${q[0].toFixed(1)}" y2="${q[1].toFixed(1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="round" ${o ? 'opacity="' + o + '"' : ''}/>`;
   const front = a.view === 'front';
   const farLeg = front ? '#cfd4e4' : '#5d6380', farArm = front ? 'var(--acc)' : '#5d6380', near = 'var(--acc)', body = '#cfd4e4';
-  return `<line x1="-40" y1="${GROUND + 3}" x2="240" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-linecap="round"/>
+  return `${groundSvg(s, a)}
     ${sceneSvg(a.scene, s)}
     ${L(s.pel, s.kne2, 8, farLeg)}${L(s.kne2, s.ank2, 7, farLeg)}${L(s.ank2, s.toe2, 5, farLeg)}
     ${L(s.sho, s.elb2, 7, farArm)}${L(s.elb2, s.han2, 6, farArm)}
@@ -1429,20 +1478,27 @@ const Figure = {
       Figure._items.forEach(it => Figure._io.observe(it.n));
     }
     let last = performance.now(), acc = 0;
-    const FRAME = 42; // ~24fps is plenty for a cartoon and far cheaper on a phone
+    const FRAME = 30; // ~30fps: smooth enough, and cheap on a phone
     const step = (now) => {
       Figure._raf = requestAnimationFrame(step);
       const dt = Math.min(120, now - last); last = now;
       if (document.hidden) return;
-      acc += dt; if (acc < FRAME) return; acc = 0;
+      acc += dt; if (acc < FRAME) return;
+      const elapsed = Math.min(acc, 120); acc = 0;       // real time since the last drawing, so speed is the same on every phone
       Figure._items.forEach(it => {
         const f = it.a.frames, speed = it.a.speed || 1500;
-        it.t += dt;
+        it.t += elapsed * ANIM_RATE;
         if (!it.vis) return;
         let u;
         if (f.length > 2) { const seg = (it.t / speed) % f.length; const i = Math.floor(seg); const k = it.a.linear ? seg - i : ease(seg - i); u = mixPose(f[i], f[(i + 1) % f.length], k); }
         else { const cyc = (it.t % (speed * 2)) / speed; const k = cyc < 1 ? ease(cyc) : ease(2 - cyc); u = mixPose(f[0], f[1], k); }
-        it.n.innerHTML = figSvg(place(u), it.a);
+        const s = place(u);
+        if (it.a.loco) {                          // walking on the spot: the floor moves under the planted foot
+          const k = lowestFoot(s);
+          if (it.prev) { if (s[k][1] >= GROUND - 1.5 && it.prev[k][1] >= GROUND - 1.5) it.v = s[k][0] - it.prev[k][0]; it.g = (it.g || 0) + (it.v || 0); }
+          it.prev = s; s._g = it.g || 0;
+        }
+        it.n.innerHTML = figSvg(s, it.a);
       });
     };
     Figure._raf = requestAnimationFrame(step);
@@ -1461,6 +1517,9 @@ const Figure = {
 const GG = GROUND;
 function W(o) {
   const q = Object.assign({}, o);
+  if (q.T && !('T2' in q) && !('F2' in q) && !('th2' in q)) q.T2 = [q.T[0] - 4, q.T[1]];
+  if (q.T) { if (q.ft == null) q.ft = 0; const d = pol([0, 0], q.ft, LEN.ft); q.F = [q.T[0] - d[0], q.T[1] - d[1]]; }
+  if (q.T2) { if (q.ft2 == null) q.ft2 = q.ft || 0; const d = pol([0, 0], q.ft2, LEN.ft); q.F2 = [q.T2[0] - d[0], q.T2[1] - d[1]]; }
   if (q.H && !('H2' in q) && !('ua2' in q)) q.H2 = [q.H[0] - 3, q.H[1] + 1];
   if (q.Hs && !('H2s' in q) && !('ua2' in q)) q.H2s = [q.Hs[0] - 3, q.Hs[1] + 1];
   if (q.F && !('F2' in q) && !('th2' in q)) q.F2 = [q.F[0] - 4, q.F[1]];
@@ -1476,11 +1535,43 @@ function pedalFrames(C, rx, ry, n, base, handFn) {
 }
 /* shared bodies */
 const SUPINE_BENCH = { px: 110, py: 144, tor: 177, F: [148, 174], F2: [144, 174] };           // head left, face up, on bench
-const ALL_FOURS = { px: 80, py: 130, tor: 0, H: [121, 174], H2: [118, 174], F: [48, 170], F2: [45, 171], ft: 166, ft2: 166 };
+const ALL_FOURS = { px: 80, py: 140, tor: -18, nek: 4, H: [121, 174], H2: [118, 174], F: [48, 172], F2: [45, 172], ft: 176, ft2: 176 };   // knees on the floor, hips over knees
 const LYING_UP = { px: 102, py: 165, tor: 180, nek: 180 };                                    // on the floor, face up
 const WALK_A = { tor: -88, th: 72, sh: 82, ft: 0, th2: 108, sh2: 118, ft2: 28 };
 const WALK_B = { tor: -88, th: 108, sh: 118, ft: 28, th2: 72, sh2: 82, ft2: 0 };
 
+/* gait generator: the planted foot moves back at a steady speed (the floor scrolls with it),
+   the other foot swings forward clear of the floor, then they swap. */
+function gaitFrames(o) {
+  const n = o.n || 16, out = [];
+  const footAt = (ph) => {
+    if (ph < o.duty) { const s = ph / o.duty; return { F: [o.hipX + o.stride - 2 * o.stride * s, GROUND], ft: 0 }; }
+    const s = (ph - o.duty) / (1 - o.duty), e = s * s * (3 - 2 * s);
+    return { F: [o.hipX - o.stride + 2 * o.stride * e, GROUND - o.lift * Math.pow(Math.sin(Math.PI * s), 0.6)], ft: o.toe * Math.sin(Math.PI * s) };
+  };
+  for (let i = 0; i < n; i++) {
+    const ph = i / n, a = footAt(ph), b = footAt((ph + 0.5) % 1);
+    const bob = o.bob * Math.cos(4 * Math.PI * (ph - o.duty / 2));
+    const sw = Math.sin(2 * Math.PI * (ph - o.duty / 2));
+    const q = { px: o.hipX, py: o.hipY + bob, tor: o.tor, F: a.F, ft: a.ft, F2: b.F, ft2: b.ft };
+    if (o.arms) Object.assign(q, o.arms(sw)); else Object.assign(q, o.fixedArms);
+    out.push(W(q));
+  }
+  return out;
+}
+const GAIT_WALK = { hipX: 100, hipY: 115.5, tor: -88, duty: 0.6, stride: 14, lift: 11, toe: 10, bob: 1.2 };
+const GAIT_RUN = { hipX: 100, hipY: 119, tor: -79, duty: 0.38, stride: 19, lift: 26, toe: 45, bob: 3 };
+const WALK4 = [
+  { tor: -87, th: 70, sh: 84, ft: -12, th2: 110, sh2: 122, ft2: 34 },
+  { tor: -89, th: 90, sh: 92, ft: 0, th2: 84, sh2: 140, ft2: 30 },
+  { tor: -87, th: 110, sh: 122, ft: 34, th2: 70, sh2: 84, ft2: -12 },
+  { tor: -89, th: 84, sh: 140, ft: 30, th2: 90, sh2: 92, ft2: 0 }];
+const WALK_ARMS = [{ ua: 104, fa: 96, ua2: 76, fa2: 66 }, { ua: 90, fa: 86, ua2: 90, fa2: 86 }, { ua: 76, fa: 66, ua2: 104, fa2: 96 }, { ua: 90, fa: 86, ua2: 90, fa2: 86 }];
+const RUN4 = [
+  { tor: -80, th: 84, sh: 100, ft: 0, th2: 40, sh2: 130, ft2: 40, ua: 55, fa: -35, ua2: 130, fa2: 40 },
+  { tor: -80, th: 118, sh: 130, ft: 55, th2: 62, sh2: 92, ft2: -5, ua: 92, fa: 10, ua2: 92, fa2: 10 },
+  { tor: -80, th: 40, sh: 130, ft: 40, th2: 84, sh2: 100, ft2: 0, ua: 130, fa: 40, ua2: 55, fa2: -35 },
+  { tor: -80, th: 62, sh: 92, ft: -5, th2: 118, sh2: 130, ft2: 55, ua: 92, fa: 10, ua2: 92, fa2: 10 }];
 const ANIM_FIX = {
   /* ---------- lower body ---------- */
   squatBar: { prop: 'bbBack', loose: true, frames: [P({ ua: 115, fa: -115, ua2: 118, fa2: -112 }), P({ tor: -64, ua: 115, fa: -115, ua2: 118, fa2: -112, th: 16, sh: 102, th2: 14, sh2: 104 })] },
@@ -1501,14 +1592,14 @@ const ANIM_FIX = {
     W({ px: 100, py: 112, tor: -90, F: [104, 176], F2: [98, 176] }),
     W({ px: 96, py: 114, tor: -12, H: [132, 150], F: [104, 176], F2: [36, 124], ft2: 90 })] },
   lunge: { prop: 'none', frames: [
-    W({ px: 90, py: 118, tor: -88, F: [116, 176], F2: [60, 170], ft2: 30 }),
-    W({ px: 88, py: 140, tor: -88, F: [116, 176], F2: [60, 166], ft2: 55 })] },
+    W({ px: 90, py: 118, tor: -88, F: [116, 176], T2: [71, 176], ft2: 30 }),
+    W({ px: 88, py: 140, tor: -88, F: [116, 176], T2: [71, 176], ft2: 55 })] },
   lungeDb: { prop: 'db', frames: [
-    W({ px: 90, py: 118, tor: -88, F: [116, 176], F2: [60, 170], ft2: 30 }),
-    W({ px: 88, py: 140, tor: -88, F: [116, 176], F2: [60, 166], ft2: 55 })] },
+    W({ px: 90, py: 118, tor: -88, F: [116, 176], T2: [71, 176], ft2: 30 }),
+    W({ px: 88, py: 140, tor: -88, F: [116, 176], T2: [71, 176], ft2: 55 })] },
   stepup: { scene: 'boxW', prop: 'none', frames: [
     W({ px: 96, py: 116, tor: -86, F: [124, 150], F2: [72, 176] }),
-    W({ px: 122, py: 88, tor: -88, F: [124, 150], F2: [106, 124], ft2: 40 })] },
+    W({ px: 122, py: 88, tor: -88, F: [124, 150], F2: [106, 124], ft2: 62 })] },
   bulgarian: { scene: 'benchBehindW', prop: 'none', frames: [
     W({ px: 92, py: 118, tor: -82, F: [120, 176], F2: [54, 140], ft2: 180 }),
     W({ px: 90, py: 142, tor: -82, F: [120, 176], F2: [54, 140], ft2: 180 })] },
@@ -1523,8 +1614,8 @@ const ANIM_FIX = {
     W({ px: 92.6, py: 145, tor: 150, nek: 180, ua: 0, fa: 0, ua2: 2, fa2: 2, F: [138, 174], F2: [134, 174] })] },
   /* ---------- push ---------- */
   pushup: { prop: 'none', frames: [
-    W({ px: 99, py: 146, tor: -23, H: [134, 175], H2: [131, 175], F: [42, 165], F2: [39, 166], ft: 60, ft2: 60 }),
-    W({ px: 106, py: 160, tor: -4, H: [134, 175], H2: [131, 175], F: [42, 165], F2: [39, 166], ft: 60, ft2: 60 })] },
+    W({ px: 99, py: 146, tor: -23, H: [134, 175], H2: [131, 175], F: [42, 165], F2: [42.5, 166], ft: 60, ft2: 60 }),
+    W({ px: 104.3, py: 160.1, tor: -4, H: [134, 175], H2: [131, 175], F: [42, 165], F2: [42.5, 166], ft: 60, ft2: 60 })] },
   bench: { scene: 'benchFlat', prop: 'bb', frames: [W(Object.assign({}, SUPINE_BENCH, { H: [72, 96] })), W(Object.assign({}, SUPINE_BENCH, { H: [76, 124] }))] },
   benchDb: { scene: 'benchFlat', prop: 'db', frames: [W(Object.assign({}, SUPINE_BENCH, { H: [72, 96] })), W(Object.assign({}, SUPINE_BENCH, { H: [78, 126] }))] },
   floorPress: { prop: 'db', frames: [
@@ -1577,8 +1668,8 @@ const ANIM_FIX = {
     W({ H: [146, 70], F: [104, 176], F2: [98, 176] }),
     W({ ua: -165, fa: -40, ua2: -168, fa2: -43, F: [104, 176], F2: [98, 176] })] },
   ytw: { prop: 'none', frames: [
-    W({ px: 80, py: 165, tor: 0, ua: -2, fa: -2, ua2: 0, fa2: 0, F: [16, 168], F2: [13, 169], ft: 180, ft2: 180 }),
-    W({ px: 80, py: 165, tor: -5, nek: -14, ua: -20, fa: -20, ua2: -18, fa2: -18, F: [16, 168], F2: [13, 169], ft: 180, ft2: 180 })] },
+    W({ px: 80, py: 165, tor: 0, ua: -2, fa: -2, ua2: 0, fa2: 0, F: [17.5, 168], F2: [17, 169], ft: 180, ft2: 180 }),
+    W({ px: 80, py: 165, tor: -5, nek: -14, ua: -20, fa: -20, ua2: -18, fa2: -18, F: [17.5, 168], F2: [17, 169], ft: 180, ft2: 180 })] },
   hangKnee: { prop: 'barHigh', frames: [
     W({ px: 100, py: 106, H: [104, 20], H2: [101, 20], F: [102, 168], F2: [98, 168], ft: 30, ft2: 30 }),
     W({ px: 100, py: 106, H: [104, 20], H2: [101, 20], F: [130, 128], F2: [126, 129], ft: 30, ft2: 30 })] },
@@ -1586,17 +1677,17 @@ const ANIM_FIX = {
   pushdown: { scene: 'cableColR', prop: 'handle', frames: [W({ H: [116, 96], F: [104, 176], F2: [98, 176] }), W({ H: [108, 118], F: [104, 176], F2: [98, 176] })] },
   /* ---------- core ---------- */
   plank: { prop: 'none', hold: true, frames: [
-    W({ px: 99, py: 154.5, tor: -9.4, H: [160, 174], H2: [157, 174], F: [36, 165], F2: [33, 166], ft: 60, ft2: 60 }),
-    W({ px: 99, py: 153.5, tor: -10, H: [160, 174], H2: [157, 174], F: [36, 165], F2: [33, 166], ft: 60, ft2: 60 })] },
+    W({ px: 99, py: 154.5, tor: -9.4, H: [160, 174], H2: [157, 174], F: [37.5, 165], F2: [38, 166], ft: 60, ft2: 60 }),
+    W({ px: 99, py: 153.5, tor: -10, H: [160, 174], H2: [157, 174], F: [37.5, 165], F2: [38, 166], ft: 60, ft2: 60 })] },
   sideplank: { view: 'front', spread: 2, prop: 'none', hold: true, frames: [
-    W({ px: 98.5, py: 146, tor: -24, H: [138, 175], ua2: -90, fa2: -90, F: [40, 172], F2: [43, 170], ft: 10, ft2: 10 }),
-    W({ px: 98.5, py: 143, tor: -26, H: [138, 175], ua2: -90, fa2: -90, F: [40, 172], F2: [43, 170], ft: 10, ft2: 10 })] },
+    W({ px: 98.5, py: 146, tor: -24, H: [138, 175], ua2: -90, fa2: -90, F: [43, 172], F2: [46, 170], ft: 10, ft2: 10 }),
+    W({ px: 98.5, py: 143, tor: -26, H: [138, 175], ua2: -90, fa2: -90, F: [43, 172], F2: [46, 170], ft: 10, ft2: 10 })] },
   deadbug: { prop: 'none', frames: [
     W(Object.assign({}, LYING_UP, { H: [62, 119], H2: [59, 120], F: [134, 133], F2: [131, 134], ft: -90, ft2: -90 })),
     W(Object.assign({}, LYING_UP, { H: [16, 158], H2: [59, 120], F: [134, 133], F2: [164, 156], ft: -90, ft2: -80 }))] },
   birddog: { prop: 'none', frames: [
     W(ALL_FOURS),
-    W(Object.assign({}, ALL_FOURS, { H: null, ua: -4, fa: -4, F2: [18, 128] }))] },
+    W(Object.assign({}, ALL_FOURS, { py: 134, tor: -12, H: [165, 124], F2: [18, 126], ft2: 176 }))] },
   pallof: { scene: 'postBehind', prop: 'handle', frames: [W({ H: [110, 90], F: [104, 176], F2: [98, 176] }), W({ H: [146, 88], F: [104, 176], F2: [98, 176] })] },
   crunch: { scene: 'cableColR', prop: 'none', frames: [
     W({ px: 96, py: 138, tor: -90, H: [106, 84], F: [64, 172], F2: [61, 172], ft: 180, ft2: 180 }),
@@ -1604,20 +1695,16 @@ const ANIM_FIX = {
   backext: { scene: 'ghdW', prop: 'none', frames: [
     W({ px: 96, py: 104, tor: 80, H: [95, 135], F: [44, 132], F2: [41, 133], ft: 70, ft2: 70 }),
     W({ px: 96, py: 104, tor: -4, H: [126, 108], F: [44, 132], F2: [41, 133], ft: 70, ft2: 70 })] },
-  carry: { prop: 'db', frames: [P(Object.assign({ ua: 90, fa: 90, ua2: 93, fa2: 93 }, WALK_A)), P(Object.assign({ ua: 90, fa: 90, ua2: 93, fa2: 93 }, WALK_B))] },
-  carryOh: { prop: 'none', frames: [P(Object.assign({ ua: -86, fa: -88, ua2: -92, fa2: -90 }, WALK_A)), P(Object.assign({ ua: -86, fa: -88, ua2: -92, fa2: -90 }, WALK_B))] },
+  carry: { loco: true, linear: true, speed: 112, prop: 'db', frames: gaitFrames(Object.assign({}, GAIT_WALK, { fixedArms: { ua: 90, fa: 90, ua2: 93, fa2: 93 } })) },
+  carryOh: { loco: true, linear: true, speed: 112, prop: 'none', frames: gaitFrames(Object.assign({}, GAIT_WALK, { fixedArms: { ua: -86, fa: -88, ua2: -92, fa2: -90 } })) },
   /* ---------- cardio ---------- */
-  run: { prop: 'none', speed: 420, frames: [
-    P({ tor: -80, th: 50, sh: 100, ft: 10, th2: 120, sh2: 195, ft2: 100, ua: 130, fa: 40, ua2: 55, fa2: -35 }),
-    P({ tor: -80, th: 120, sh: 195, ft: 100, th2: 50, sh2: 100, ft2: 10, ua: 55, fa: -35, ua2: 130, fa2: 40 })] },
-  walk: { prop: 'none', speed: 900, frames: [
-    P(Object.assign({ ua: 104, fa: 96, ua2: 76, fa2: 66 }, WALK_A)),
-    P(Object.assign({ ua: 76, fa: 66, ua2: 104, fa2: 96 }, WALK_B))] },
+  run: { loco: true, linear: true, prop: 'none', speed: 52, frames: gaitFrames(Object.assign({}, GAIT_RUN, { arms: w => ({ ua: 92 - 38 * w, fa: 2 - 38 * w, ua2: 92 + 38 * w, fa2: 2 + 38 * w }) })) },
+  walk: { loco: true, linear: true, prop: 'none', speed: 112, frames: gaitFrames(Object.assign({}, GAIT_WALK, { arms: w => ({ ua: 90 - 16 * w, fa: 82 - 22 * w, ua2: 90 + 16 * w, fa2: 82 + 22 * w }) })) },
   rope: { prop: 'rope', linear: true, speed: 120, frames: [
-    W({ py: 112, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 176], F2: [99, 176], ropeX: 102, ropeY: 4 }),
-    W({ py: 108, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 172], F2: [99, 172], ft: 30, ft2: 30, ropeX: 178, ropeY: 104 }),
-    W({ py: 102, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 166], F2: [99, 166], ft: 50, ft2: 50, ropeX: 102, ropeY: GG + 10 }),
-    W({ py: 108, ua: 72, fa: 28, ua2: 76, fa2: 32, F: [103, 172], F2: [99, 172], ft: 30, ft2: 30, ropeX: 26, ropeY: 104 })] },
+    W({ py: 112, ua: 72, fa: 28, ua2: 76, fa2: 32, T: [116, 176], ft: 0, ropeX: 102, ropeY: 4 }),
+    W({ py: 109, ua: 72, fa: 28, ua2: 76, fa2: 32, T: [116, 176], ft: 32, ropeX: 178, ropeY: 104 }),
+    W({ py: 102, ua: 72, fa: 28, ua2: 76, fa2: 32, T: [116, 170], ft: 48, ropeX: 102, ropeY: GG + 10 }),
+    W({ py: 109, ua: 72, fa: 28, ua2: 76, fa2: 32, T: [116, 176], ft: 32, ropeX: 26, ropeY: 104 })] },
   circuit: { prop: 'none', speed: 460, frames: [
     W({ px: 96, py: 138, tor: -58, ua: 92, fa: 86, ua2: 95, fa2: 89, F: [110, 176], F2: [106, 176] }),
     W({ px: 100, py: 98, tor: -88, ua: -80, fa: -82, ua2: -84, fa2: -86, F: [102, 160], F2: [98, 161], ft: 60, ft2: 60 })] },
@@ -1629,25 +1716,29 @@ const ANIM_FIX = {
   ellip: { scene: 'ellipW', prop: 'none', linear: true, speed: 110, frames: pedalFrames([100, 162], 18, 7, 8, { px: 96, py: 104, tor: -88, ft: 0, ft2: 0 },
     t => ({ H: [120 - 12 * Math.cos(t), 96], H2: [120 + 12 * Math.cos(t), 97] })) },
   /* ---------- mobility ---------- */
-  catcow: { prop: 'none', frames: [W(Object.assign({}, ALL_FOURS, { py: 134, nek: -35 })), W(Object.assign({}, ALL_FOURS, { py: 126, tor: -6, nek: 45, ft: 150, ft2: 146 }))] },
-  tspine: { prop: 'none', loose: true, speed: 1000, frames: [
+  catcow: { prop: 'none', frames: [W(Object.assign({}, ALL_FOURS, { tor: -14, nek: 40 })), W(Object.assign({}, ALL_FOURS, { tor: -22, nek: -40 }))] },
+  tspine: { prop: 'none', loose: true, speed: 700, frames: [
     W(ALL_FOURS),
     W(Object.assign({}, ALL_FOURS, { H: [100, 160], nek: 30 })),
     W(ALL_FOURS),
-    W(Object.assign({}, ALL_FOURS, { H: null, ua: -80, fa: -82, nek: -60 }))] },
+    W(Object.assign({}, ALL_FOURS, { H: [150, 142], nek: -20 })),
+    W(Object.assign({}, ALL_FOURS, { H: [121, 80], nek: -60 })),
+    W(Object.assign({}, ALL_FOURS, { H: [150, 142], nek: -20 }))] },
   hipCircle: { prop: 'none', speed: 900, frames: [
     W(ALL_FOURS),
-    W(Object.assign({}, ALL_FOURS, { F: [40, 128] })),
-    W(Object.assign({}, ALL_FOURS, { F: [74, 142] }))] },
+    W(Object.assign({}, ALL_FOURS, { py: 134, F: [64, 146] })),
+    W(Object.assign({}, ALL_FOURS, { py: 134, F: [22, 140] }))] },
   child: { prop: 'none', hold: true, frames: [
-    W({ px: 78, py: 150, tor: 10, nek: 20, H: [160, 172], H2: [157, 173], F: [74, 172], F2: [71, 172], ft: 180, ft2: 180 }),
-    W({ px: 78, py: 151, tor: 11, nek: 21, H: [162, 172], H2: [159, 173], F: [74, 172], F2: [71, 172], ft: 180, ft2: 180 })] },
+    W({ px: 78, py: 150, tor: 10, nek: 20, H: [160, 173], H2: [157, 173], F: [69, 172], F2: [66, 172], ft: 180, ft2: 180 }),
+    W({ px: 78, py: 151, tor: 11, nek: 21, H: [160, 173], H2: [157, 173], F: [69, 172], F2: [66, 172], ft: 180, ft2: 180 })] },
   dog: { prop: 'none', hold: true, frames: [
-    W({ px: 100, py: 112, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], F: [70, 167], F2: [67, 168], ft: 60, ft2: 60 }),
-    W({ px: 100, py: 112, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], F: [70, 170], F2: [67, 164], ft: 30, ft2: 70 })] },
-  lungeStretch: { prop: 'none', loose: true, frames: [
+    W({ px: 100, py: 112, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], T: [76, 176], T2: [73, 176], ft: 60, ft2: 60 }),
+    W({ px: 101, py: 113, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], T: [76, 176], T2: [73, 176], ft: 48, ft2: 72 })] },
+  lungeStretch: { prop: 'none', loose: true, speed: 800, frames: [
     W({ px: 86, py: 146, tor: -30, H: [120, 174], H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 }),
-    W({ px: 86, py: 146, tor: -30, nek: -60, H: null, ua: -78, fa: -80, H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 })] },
+    W({ px: 86, py: 146, tor: -30, nek: -20, H: [150, 140], H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 }),
+    W({ px: 86, py: 146, tor: -30, nek: -60, H: [126, 79], H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 }),
+    W({ px: 86, py: 146, tor: -30, nek: -20, H: [150, 140], H2: [117, 174], F: [126, 176], F2: [28, 168], ft2: 40 })] },
   hamstring: { prop: 'none', frames: [
     W({ px: 98, py: 114, tor: -88, F: [122, 174], F2: [84, 176], ft: -40 }),
     W({ px: 86, py: 122, tor: -24, H: [126, 160], F: [122, 174], F2: [84, 176], ft: -40 })] },
@@ -1656,13 +1747,13 @@ const ANIM_FIX = {
     W({ px: 99, py: 121, tor: -60, H: [154, 82], H2: [151, 84], F: [118, 176], F2: [66, 176] })] },
   couch: { scene: 'wallL', prop: 'none', hold: true, frames: [
     W({ px: 66, py: 146, tor: -92, H: [100, 136], H2: [97, 137], F: [118, 176], F2: [46, 140], ft2: -90 }),
-    W({ px: 68, py: 146, tor: -97, H: [102, 136], H2: [99, 137], F: [118, 176], F2: [46, 140], ft2: -90 })] },
+    W({ px: 66, py: 146, tor: -97, H: [100, 136], H2: [97, 137], F: [118, 176], F2: [46, 140], ft2: -90 })] },
   ankleRock: { prop: 'none', frames: [
-    W({ px: 74, py: 140, tor: -86, H: [110, 142], H2: [107, 143], F: [120, 176], F2: [40, 172], ft2: 180 }),
-    W({ px: 84, py: 140, tor: -86, H: [120, 140], H2: [117, 141], F: [120, 176], F2: [40, 172], ft2: 180 })] },
+    W({ px: 74, py: 140, tor: -86, H: [110, 142], H2: [107, 143], F: [120, 176], F2: [42, 172], ft2: 180 }),
+    W({ px: 84, py: 141.6, tor: -86, H: [120, 141.6], H2: [117, 142.6], F: [120, 176], F2: [42, 172], ft2: 180 })] },
   pigeon: { prop: 'none', hold: true, frames: [
-    P({ anchor: 'py', py: GG - 12, tor: -50, ua: 76, fa: 62, ua2: 80, fa2: 66, th: 14, sh: 168, ft: 172, th2: 172, sh2: 174, ft2: 150 }),
-    P({ anchor: 'py', py: GG - 12, tor: -38, ua: 60, fa: 46, ua2: 64, fa2: 50, th: 14, sh: 168, ft: 172, th2: 172, sh2: 174, ft2: 150 })] },
+    W({ px: 100, py: 159.8, tor: -50, H: [143, 174], H2: [140, 174.5], th: 22, sh: 178, ft: 176, th2: 157.6, sh2: 180, ft2: 176 }),
+    W({ px: 100, py: 159.8, tor: -38, H: [143, 174], H2: [140, 174.5], th: 22, sh: 178, ft: 176, th2: 157.6, sh2: 180, ft2: 176 })] },
   shoulderCircle: { prop: 'none', loose: true, speed: 700, frames: [
     P({ ua: 90, fa: 90, ua2: 94, fa2: 94 }), P({ ua: 0, fa: 0, ua2: 4, fa2: 4 }), P({ ua: -90, fa: -90, ua2: -86, fa2: -86 }), P({ ua: 150, fa: 150, ua2: 154, fa2: 154 })] },
   wallSlide: { view: 'front', scene: 'wallBehind', prop: 'none', frames: [
@@ -1678,10 +1769,19 @@ EXANIM.floorpr = 'floorPress';
 /* pre-solve every IK keyframe so angles exist even where a limb is only pinned in one frame */
 Object.values(ANIM).forEach(a => a.frames.forEach(f => {
   if (!f.ik) return;
-  ['H', 'H2', 'F', 'F2', 'Hs', 'H2s'].forEach(k => { if (f[k] === null) delete f[k]; });
+  ['H', 'H2', 'F', 'F2', 'T', 'T2', 'Hs', 'H2s'].forEach(k => { if (f[k] === null) delete f[k]; });
   const q = resolveIK(f);
   ['ua', 'fa', 'ua2', 'fa2', 'th', 'sh', 'th2', 'sh2'].forEach(k => { f[k] = q[k]; });
 }));
+/* gravity: standing moves drawn from joint angles keep the planted feet where they are */
+Object.values(ANIM).forEach(a => {
+  if (a.loco || a.frames.some(f => f.ik || (f.anchor || 'feet') !== 'feet')) return;
+  const s0 = place(a.frames[0]);
+  const both = Math.abs(s0.ank[1] - s0.ank2[1]) < 3;
+  const k = both ? 'mid' : (s0.ank[1] > s0.ank2[1] ? 'ank' : 'ank2');
+  const x = both ? (s0.ank[0] + s0.ank2[0]) / 2 : s0[k][0];
+  a.frames.forEach(f => { f.pinK = k; f.pinX = x; });
+});
 /* =========================================================
    ANIME FIGURE
    Same skeleton and poses as before; only the drawing changes.
@@ -1697,7 +1797,7 @@ function figLook() {
   const body = L.body || (p.gender === 'female' ? 'f' : p.gender === 'male' ? 'm' : 'n');
   return { body, skin: L.skin || LOOKS.skin[1], hair: L.hair || (body === 'f' ? LOOKS.hair[1] : LOOKS.hair[0]), style: L.style || 'anime' };
 }
-function figSvg(s, a) { return figLook().style === 'simple' ? figSvgStick(s, a) : figSvgAnime(s, a); }
+function figSvg(s, a) { return figLook().style === 'simple' ? figSvgStick(s, a) : figSvgInk(s, a); }
 
 /* ---------- small geometry helpers ---------- */
 const _d = a => [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
@@ -1736,116 +1836,222 @@ function torsoPts(s, L, front, t0, t1) {
   return steps.map(t => at(t, -_w(back, t))).concat(steps.slice().reverse().map(t => at(t, _w(fr, t))));
 }
 
-/* ---------- limbs ---------- */
-function legSvg(pel, kne, ank, toe, ft, C, L) {
-  let o = '';
-  if (L.body === 'f') o += _seg(kne, ank, 7.8, C.bottom) + _seg(pel, kne, 10.6, C.bottom);                    // leggings
-  else if (L.body === 'n') { o += _seg(_lerp(kne, ank, .5), ank, 7.2, C.skin) + _seg(kne, _lerp(kne, ank, .56), 8.6, C.bottom) + _seg(pel, kne, 11, C.bottom); } // 3/4 joggers
-  else { const k2 = _lerp(pel, kne, .8); o += _seg(k2, kne, 8.4, C.skin) + _seg(kne, ank, 7.8, C.skin) + _seg(pel, k2, 11.6, C.bottom); } // shorts
-  const heel = pol(ank, ft + 180, 2.4), tip = pol(toe, ft, 1);
-  return o + _seg(heel, tip, 6.6, C.shoe) + _seg(pol(heel, ft + 90, 2.5), pol(tip, ft + 90, 2.3), 1.8, C.sole);
+/* =========================================================
+   INK STYLE — original design with a modern action-anime look:
+   bold ink outlines, hard two-tone cel shading, sharp narrow eyes,
+   clumped spiky hair, and a coloured rim light in the app accent.
+   Outfit: black training top and track pants with an accent stripe.
+   ========================================================= */
+const INK = '#07080d';
+function _hex(c) { const n = parseInt(c.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+function _mix(a, b, t) { const A = _hex(a), B = _hex(b); return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join(''); }
+const _sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+const _add = (a, b, k = 1) => [a[0] + b[0] * k, a[1] + b[1] * k];
+function _unit(v) { const m = Math.hypot(v[0], v[1]) || 1; return [v[0] / m, v[1] / m]; }
+/* which side of a limb is in shadow: light comes from above and slightly in front */
+function _shadeN(d) { const n = [-d[1], d[0]]; return (n[1] - 0.35 * n[0]) > 0 ? n : [-n[0], -n[1]]; }
+
+/* tapered capsule from p (radius r1) to q (radius r2) */
+function _cap(p, q, r1, r2) {
+  const d = _unit(_sub(q, p)), n = [-d[1], d[0]];
+  const a = _add(p, n, r1), b = _add(q, n, r2), c = _add(q, n, -r2), e = _add(p, n, -r1);
+  return `M${_f(a)} L${_f(b)} A${r2} ${r2} 0 0 0 ${_f(c)} L${_f(e)} A${r1} ${r1} 0 0 0 ${_f(a)}Z`;
 }
-function armSvg(sho, elb, han, C) {
-  const e1 = _lerp(sho, elb, .55);
-  return _seg(e1, elb, 6.2, C.skin) + _seg(elb, han, 5.8, C.skin) + _seg(sho, e1, 8.2, C.shirt) + _dot(han, 3.4, C.skin);
+/* one limb chain: a single ink silhouette, then fills, then the cel shadow, then the rim light */
+function _chain(segs, rim) {
+  let ink = '', fill = '', shade = '', light = '';
+  segs.forEach(g => {
+    const [p, q, r1, r2, c, cs] = g;
+    ink += `<path d="${_cap(p, q, r1 + 1.1, r2 + 1.1)}" fill="${INK}"/>`;
+    fill += `<path d="${_cap(p, q, r1, r2)}" fill="${c}"/>`;
+    if (Math.hypot(q[0] - p[0], q[1] - p[1]) < 0.5) return;
+    const d = _unit(_sub(q, p)), n = _shadeN(d), k = 0.46;
+    shade += `<path d="${_cap(_add(p, n, r1 * (1 - k)), _add(q, n, r2 * (1 - k)), r1 * k, r2 * k)}" fill="${cs}"/>`;
+    if (rim && g[6]) light += `<line x1="${_add(p, n, r1 - .75)[0].toFixed(1)}" y1="${_add(p, n, r1 - .75)[1].toFixed(1)}" x2="${_add(q, n, r2 - .75)[0].toFixed(1)}" y2="${_add(q, n, r2 - .75)[1].toFixed(1)}" stroke="${rim}" stroke-width="1.1" stroke-linecap="round" opacity=".9"/>`;
+  });
+  return ink + fill + shade + light;
+}
+
+/* ---------- palette ---------- */
+function _pal(L, far) {
+  const dk = (c, t) => _mix(c, '#05060a', t);
+  const P = {
+    skin: L.skin, skinS: _mix(L.skin, '#5b2733', .34),
+    hair: L.hair, hairS: _mix(L.hair, '#000000', .5), hairH: _mix(L.hair, '#ffffff', .38),
+    top: '#1b1f2d', topS: '#0b0d14', bot: '#161924', botS: '#08090e',
+    shoe: '#e6e9f1', shoeS: '#aab0c2', rim: 'var(--acc)', stripe: 'var(--acc)'
+  };
+  if (far) { ['skin', 'skinS', 'hair', 'hairS', 'shoe', 'shoeS'].forEach(k => { P[k] = dk(P[k], .42); }); P.top = '#12151f'; P.bot = '#0e1018'; P.rim = null; P.stripe = null; }
+  return P;
+}
+
+/* ---------- legs and arms ---------- */
+function inkLeg(pel, kne, ank, toe, ft, C, L) {
+  const slim = L.body === 'f' ? .88 : 1;
+  const heel = pol(ank, ft + 180, 2.6), tip = pol(toe, ft, .6);
+  let o = _chain([
+    [pel, kne, 5.8 * slim, 4.7 * slim, C.bot, C.botS, 1],
+    [kne, ank, 4.6 * slim, 3.5 * slim, C.bot, C.botS, 1]
+  ], C.rim);
+  // trainer: white upper, black sole
+  const sole = pol(heel, ft + 90, 2.2), sole2 = pol(tip, ft + 90, 1.8);
+  o += `<path d="${_cap(heel, tip, 3.9, 3.1)}" fill="${INK}"/><path d="${_cap(heel, tip, 2.9, 2.1)}" fill="${C.shoe}"/>`;
+  o += `<line x1="${sole[0].toFixed(1)}" y1="${sole[1].toFixed(1)}" x2="${sole2[0].toFixed(1)}" y2="${sole2[1].toFixed(1)}" stroke="${INK}" stroke-width="1.8" stroke-linecap="round"/>`;
+  return o;
+}
+function inkArm(sho, elb, han, C) {
+  const d = _unit(_sub(han, elb)), fist = _add(han, d, 1.2), sl = _lerp(sho, elb, .58);
+  let o = _chain([
+    [sho, elb, 4.2, 3.3, C.skin, C.skinS],
+    [elb, han, 3.1, 2.6, C.skin, C.skinS],
+    [_add(han, d, -.8), fist, 3.1, 3.1, C.skin, C.skinS]
+  ]);
+  o += _chain([[sho, sl, 5.2, 4.5, C.top, C.topS, 1]], C.rim);           // short sleeve over the arm
+  if (C.stripe) { const ds = _unit(_sub(sl, sho)), m = [-ds[1], ds[0]], c1 = _add(sl, m, 4.3), c2 = _add(sl, m, -4.3);
+    o += `<line x1="${c1[0].toFixed(1)}" y1="${c1[1].toFixed(1)}" x2="${c2[0].toFixed(1)}" y2="${c2[1].toFixed(1)}" stroke="${C.stripe}" stroke-width="1.2"/>`; }
+  return o;
+}
+
+/* ---------- torso ---------- */
+function inkTorso(s, L, front, C) {
+  const u = [(s.sho[0] - s.pel[0]) / LEN.torso, (s.sho[1] - s.pel[1]) / LEN.torso], n = [-u[1], u[0]];
+  const at = (t, off) => [s.pel[0] + u[0] * LEN.torso * t + n[0] * off, s.pel[1] + u[1] * LEN.torso * t + n[1] * off];
+  const k = L.body === 'f' ? 1.04 : 1.12, sc = pr => pr.map(([t, w]) => [t, w * k]);
+  const bk = sc(front ? TORSO[L.body + 'F'] : TORSO[L.body].back), fr = sc(front ? TORSO[L.body + 'F'] : TORSO[L.body].front);
+  const side = (n[1] - 0.35 * n[0]) > 0 ? 1 : -1, prof = side > 0 ? fr : bk;   // shadow side
+  const T = []; for (let t = -0.12; t <= 1.07 + 1e-6; t += 1.19 / 9) T.push(t);
+  const outline = T.map(t => at(t, -_w(bk, t))).concat(T.slice().reverse().map(t => at(t, _w(fr, t))));
+  const sh = T.map(t => at(t, side * _w(prof, t))).concat(T.slice().reverse().map(t => at(t, side * (_w(prof, t) - 0.42 * (_w(bk, t) + _w(fr, t))))));
+  let o = `<path d="${_smooth(outline)}" fill="${C.top}" stroke="${INK}" stroke-width="2.2" stroke-linejoin="round" paint-order="stroke"/>`;
+  o += `<path d="${_smooth(sh)}" fill="${C.topS}"/>`;
+  // waistband and hem of the top
+  const w0 = at(0.02, -_w(bk, 0.02)), w1 = at(0.02, _w(fr, 0.02));
+  o += `<line x1="${w0[0].toFixed(1)}" y1="${w0[1].toFixed(1)}" x2="${w1[0].toFixed(1)}" y2="${w1[1].toFixed(1)}" stroke="${C.stripe || INK}" stroke-width="1.3" opacity=".9"/>`;
+  if (C.rim) o += `<polyline points="${T.slice(1, -1).map(t => at(t, side * (_w(prof, t) - .8))).map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ')}" fill="none" stroke="${C.rim}" stroke-width="1.2" stroke-linecap="round" opacity=".9"/>`;
+  // collar
+  const c0 = at(1.0, -_w(bk, 1.0) * .55), c1 = at(1.0, _w(fr, 1.0) * .55);
+  o += `<line x1="${c0[0].toFixed(1)}" y1="${c0[1].toFixed(1)}" x2="${c1[0].toFixed(1)}" y2="${c1[1].toFixed(1)}" stroke="${C.stripe || INK}" stroke-width="1.4" stroke-linecap="round"/>`;
+  return o;
 }
 
 /* ---------- head ---------- */
-const HAIR = {
-  m: { out: [[18, 10.2], [30, 13.2], [40, 11.4], [52, 15.6], [66, 12.8], [80, 17.2], [96, 13.4], [112, 17.6], [128, 13.6], [146, 16.6], [164, 13.4], [184, 15], [204, 13], [226, 13.4], [242, 11.8]],
-       inn: [[238, 6], [205, 3], [160, 2.5], [115, 6.5], [80, 9], [50, 9], [32, 8.4], [24, 9]] },
-  f: { out: [[16, 10.6], [28, 13], [44, 14.2], [64, 14.8], [90, 15], [116, 14.8], [142, 14.4], [168, 13.8], [196, 13.2], [222, 12.6], [246, 11.6], [262, 10]],
-       inn: [[252, 7], [215, 3], [165, 2.5], [115, 6.5], [72, 9.4], [44, 9.2], [30, 8.6], [22, 9.2]] },
-  n: { out: [[16, 10.4], [28, 13.2], [42, 12.2], [56, 15], [74, 13.6], [92, 15.8], [112, 14.4], [132, 16], [152, 14.8], [172, 15.6], [194, 14.6], [214, 15.2], [236, 13.8], [256, 12.6], [268, 10.6]],
-       inn: [[260, 7.5], [215, 3], [160, 2.5], [110, 6.5], [66, 9.2], [36, 8.6], [24, 9]] }
+const HEADR = 10;                                    // head radius
+/* hair outlines in head space: x forward (face), y up. Sharp clumps, no specific character's cut. */
+const INK_HAIR = {
+  m: [[6.6, 6.4], [10.6, 3.4], [8.0, 6.8], [10.8, 5.8], [9.0, 9.4], [12.2, 11.0], [6.4, 11.8], [7.8, 15.4], [2.2, 12.6], [1.2, 16.6], [-2.4, 12.4], [-5.2, 15.8], [-6.6, 10.6], [-11.4, 12.6], [-9.8, 6.2], [-14.4, 6.0], [-10.6, 2.0], [-13.8, -0.4], [-10.6, -1.8], [-11.8, -5.0], [-8.2, -4.2], [-6.0, -2.0], [-2.8, 2.2], [-1.0, -2.6], [0.4, 2.4], [3.4, 5.2]],
+  f: [[6.0, 7.0], [10.6, 2.2], [8.2, 5.8], [10.2, 5.4], [9.6, 9.0], [5.6, 12.4], [0.2, 13.2], [-4.8, 12.4], [-8.2, 10.0], [-11.0, 5.2], [-11.6, 0.0], [-10.8, -5.6], [-12.4, -10.2], [-8.4, -7.0], [-7.6, -11.4], [-5.2, -6.4], [-4.0, -2.6], [-2.0, 2.2], [0.8, -5.6], [1.2, 2.0], [3.6, 5.4]],
+  n: [[6.2, 6.8], [10.8, 2.6], [8.2, 6.2], [11.0, 6.2], [9.6, 9.8], [11.2, 12.4], [5.4, 12.6], [3.8, 15.4], [0.0, 13.2], [-4.2, 15.2], [-6.2, 11.6], [-11.2, 11.4], [-10.4, 6.6], [-13.6, 3.0], [-11.0, 0.4], [-12.6, -5.6], [-9.0, -4.0], [-9.4, -9.2], [-6.0, -4.6], [-4.2, -1.0], [-2.4, 2.6], [-0.4, -4.4], [1.0, 2.4], [3.4, 5.4]]
 };
-function headSvg(s, L, front) {
-  const p = s._p || {}, U = p.nek != null ? p.nek : p.tor;
-  const H = s.hed, R = 12, ay = _d(U), ax = _d(U + 90);
+/* the lit crescent on top of the hair */
+const INK_CLUMPS = {
+  m: [[[-1.0, 8.8], [-4.4, 14.2]], [[3.0, 9.2], [6.6, 13.6]], [[-5.8, 6.4], [-10.2, 11.2]], [[-8.0, 2.4], [-12.8, 5.2]], [[-8.6, -1.0], [-12.2, -1.0]], [[6.8, 7.4], [10.0, 5.2]]],
+  f: [[[-6.4, 6.8], [-9.8, -3.6]], [[-4.2, 5.4], [-9.4, -8.4]], [[-8.6, 3.0], [-10.8, -4.6]], [[7.0, 7.2], [9.8, 3.4]], [[2.0, 10.2], [-2.6, 11.4]]],
+  n: [[[-1.4, 8.8], [-3.8, 14.0]], [[3.6, 9.0], [4.6, 14.4]], [[-6.4, 6.0], [-10.4, 10.4]], [[-8.2, 1.6], [-12.4, 2.8]], [[-8.0, -2.6], [-9.0, -8.2]], [[7.2, 7.4], [10.2, 5.4]]]
+};
+const INK_SHINE = { m: [[-8.4, 7.6], [-4.4, 10.4], [0.4, 11.4], [4.6, 10.6]], f: [[-8.0, 7.4], [-4.0, 10.6], [0.8, 11.6], [5.0, 10.8]], n: [[-8.6, 7.8], [-4.4, 10.8], [0.4, 11.6], [4.8, 11.0]] };
+
+function inkHead(s, L, front, C) {
+  const p = s._p || {}, U = p.nek != null ? p.nek : p.tor, H = s.hed;
+  const ay = _d(U), ax = _d(U + 90);
   const P = (x, y) => [H[0] + ax[0] * x + ay[0] * y, H[1] + ax[1] * x + ay[1] * y];
-  const PP = (phi, r) => P(r * Math.cos(phi * Math.PI / 180), r * Math.sin(phi * Math.PI / 180));
-  const skin = L.skin, hair = L.hair, ink = '#2a2340', rot = (U + 90).toFixed(1);
-  const eye = (x, y, big) => { const c = P(x, y), hl = P(x + .7, y + 1.3);
-    return `<ellipse cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" rx="${big ? 2.3 : 2.2}" ry="${big ? 3.4 : 3.2}" fill="${ink}" transform="rotate(${rot} ${c[0].toFixed(1)} ${c[1].toFixed(1)})"/>` + _dot(hl, .95, '#fff'); };
-  const lid = (x0, y0, x1, y1, w) => _seg(P(x0, y0), P(x1, y1), w, ink);
+  const pts = arr => arr.map(([x, y]) => P(x, y));
+  const f = L.body === 'f';
+  const line = (a, b, w, c, o) => { const A = P(...a), B = P(...b); return `<line x1="${A[0].toFixed(1)}" y1="${A[1].toFixed(1)}" x2="${B[0].toFixed(1)}" y2="${B[1].toFixed(1)}" stroke="${c || INK}" stroke-width="${w}" stroke-linecap="round"${o ? ` opacity="${o}"` : ''}/>`; };
+  const poly = (arr, fill, extra) => `<path d="${_poly(pts(arr))}" fill="${fill}"${extra || ''}/>`;
+  const inked = ' stroke="' + INK + '" stroke-width="2" stroke-linejoin="round" paint-order="stroke"';
   let o = '';
   if (!front) {
-    // ponytail hangs from the back and falls with gravity; it lies on the floor when lying down
-    if (L.body === 'f') {
-      const A = PP(152, 12.4), dirB = _d(U - 115);   // local 'back and a little down', in world terms
-      let v = [dirB[0] * .55, dirB[1] * .55 + .8]; const m = Math.hypot(v[0], v[1]); v = [v[0] / m, v[1] / m]; const pr = [-v[1], v[0]];
+    // ponytail first, so it sits behind the head; it hangs with gravity and rests on the floor when lying down
+    if (f) {
+      const A = P(-8.2, 10.2), dirB = _d(U - 118);
+      let v = [dirB[0] * .5, dirB[1] * .5 + .85]; const m = Math.hypot(v[0], v[1]); v = [v[0] / m, v[1] / m]; const pr = [-v[1], v[0]];
       const at = (d, w) => { const q = [A[0] + v[0] * d + pr[0] * w, A[1] + v[1] * d + pr[1] * w]; q[1] = Math.min(q[1], GROUND + 1); return q; };
-      o += `<path d="${_smooth([at(0, 3.4), at(9, 5.6), at(18, 3.6), at(25, 0), at(19, -2.6), at(9, -4.2), at(0, -3)])}" fill="${hair}"/>` + _dot(A, 2.4, 'var(--acc)');
+      const tail = [at(0, 3.2), at(8, 5.4), at(15, 4.2), at(22, 5.0), at(26, 1.2), at(21, -.4), at(24, -3.0), at(16, -2.6), at(9, -4.2), at(0, -3.2)];
+      o += `<path d="${_poly(tail)}" fill="${C.hair}"${inked}/>`;
+      o += `<path d="${_poly([at(3, -2.6), at(10, -3.6), at(17, -2.2), at(12, 0), at(4, 0.4)])}" fill="${C.hairS}"/>`;
+      o += _dot(A, 2.3, C.stripe || INK);
     }
-    o += _dot(H, R, skin);
-    o += `<path d="M${_f(P(11.4, -.6))} L${_f(P(13.3, -2.8))} L${_f(P(11.2, -3.4))}Z" fill="${skin}"/>`;   // little nose
-    const hp = HAIR[L.body];
-    const hairPts = hp.out.map(([a, r]) => PP(a, r)).concat(hp.inn.map(([a, r]) => PP(a, r)));
-    o += `<path d="${L.body === 'f' ? _smooth(hairPts) : _poly(hairPts)}" fill="${hair}" stroke="${hair}" stroke-width="1.2" stroke-linejoin="round"/>`;
-    { const E = P(1.2, -1.6); o += `<ellipse cx="${E[0].toFixed(1)}" cy="${E[1].toFixed(1)}" rx="2.2" ry="3" fill="${skin}" stroke="rgba(0,0,0,.2)" stroke-width=".9" transform="rotate(${rot} ${E[0].toFixed(1)} ${E[1].toFixed(1)})"/>`; }
-    if (L.body !== 'm') o += `<path d="${_smooth([P(1.6, 4), P(3.6, 2.4), P(3.2, L.body === 'f' ? -8 : -5), P(1.2, L.body === 'f' ? -10 : -7), P(-.6, -5), P(-.2, 3)])}" fill="${hair}"/>`; // lock by the ear
-    o += `<polyline points="${[80, 96, 112, 126].map(a => _f(PP(a, 11.2)).replace(' ', ',')).join(' ')}" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width="1.3" stroke-linecap="round"/>`; // shine
-    o += eye(6.3, -.9, L.body === 'f');
-    o += lid(4.1, 2.9, 8.6, 2.5, L.body === 'f' ? 1.7 : 1.3) + (L.body === 'f' ? lid(8.6, 2.5, 9.8, 3.6, 1.2) : '');
-    o += _seg(P(4.2, 5.7), P(8.6, 6.1), 1.3, hair);                                       // eyebrow over the fringe
-    o += `<ellipse cx="${P(7.6, -4.4)[0].toFixed(1)}" cy="${P(7.6, -4.4)[1].toFixed(1)}" rx="1.9" ry="1.2" fill="#ff8a8a" opacity=".32"/>`;
-    o += _seg(P(9.3, -6.3), P(10.9, -5.8), 1.1, '#8e4747');
+    // head shape: cranium, then a sharp profile — brow, nose, lips, pointed chin, clean jaw
+    const skull = [215, 200, 185, 170, 155, 140, 125, 110, 95, 80, 65].map(a => [HEADR * Math.cos(a * Math.PI / 180), HEADR * Math.sin(a * Math.PI / 180)]);
+    const faceM = [[7.3, 6.4], [8.9, 3.1], [8.5, 1.5], [9.7, 0.2], [11.7, -2.1], [9.9, -2.9], [10.1, -4.2], [9.5, -4.9], [9.9, -5.6], [9.3, -7.9], [7.5, -9.5], [3.0, -8.7], [-0.6, -6.9]];
+    const faceF = [[7.3, 6.4], [8.8, 3.0], [8.4, 1.5], [9.5, 0.1], [11.0, -2.0], [9.6, -2.8], [9.8, -4.1], [9.3, -4.8], [9.6, -5.5], [8.8, -7.8], [6.8, -9.1], [2.6, -8.1], [-0.2, -6.3]];
+    o += poly(skull.concat(f ? faceF : faceM), C.skin, inked);
+    o += poly([[-0.4, -6.4], [3.0, -8.2], [7.2, -9.0], [6.6, -7.6], [2.6, -6.8], [-0.6, -5.2]], C.skinS);             // jaw shadow
+    o += line([9.9, -2.9], [10.9, -2.5], .6, C.skinS);                                                                  // under the nose
+    // eye: narrow and sharp, heavy upper lash line, small iris
+    o += poly([[5.0, 1.2], [8.0, 0.6], [7.6, -0.8], [5.4, -0.6]], '#f3efe7');
+    const I = P(6.9, 0.1), rot = (U + 90).toFixed(1);
+    o += `<ellipse cx="${I[0].toFixed(1)}" cy="${I[1].toFixed(1)}" rx="1.0" ry="1.35" fill="#15121d" transform="rotate(${rot} ${I[0].toFixed(1)} ${I[1].toFixed(1)})"/>`;
+    o += _dot(P(7.2, 0.5), .38, '#ffffff');
+    o += `<polyline points="${pts([[4.5, 1.6], [6.5, 1.6], [8.4, 0.7], [9.0, -0.1]]).map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ')}" fill="none" stroke="${INK}" stroke-width="${f ? 1.3 : 1.1}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    o += line([5.6, -0.8], [7.5, -0.9], .5, INK, .7);
+    // brow: a hard, determined angle
+    o += poly([[4.4, 3.4], [9.0, 3.0], [9.2, 2.3], [5.0, 2.6]], INK);
+    o += line([8.6, -4.95], [9.6, -4.8], .7);                                                                           // mouth
+    // hair: sharp clumps, a darker underside, a lit crescent on top
+    const hp = INK_HAIR[L.body];
+    o += poly(hp, C.hair, inked);
+    INK_CLUMPS[L.body].forEach(([a, b]) => { o += line(a, b, .7, INK, .75); });
+    const sh = INK_SHINE[L.body];
+    o += line(sh[0], sh[1], 1.3, C.hairH, .8) + line([sh[1][0] + 1.4, sh[1][1] + .6], sh[2], 1.3, C.hairH, .8) + line([sh[2][0] + 1.6, sh[2][1] - .2], sh[3], 1.1, C.hairH, .6);
+    // ear sits in front of the hair behind it, just behind the sideburn
+    const E = P(-4.0, -1.4);
+    o += `<ellipse cx="${E[0].toFixed(1)}" cy="${E[1].toFixed(1)}" rx="1.8" ry="2.6" fill="${C.skin}" stroke="${INK}" stroke-width=".8" transform="rotate(${(U + 90).toFixed(1)} ${E[0].toFixed(1)} ${E[1].toFixed(1)})"/>`;
+    o += line([-3.8, 0.2], [-3.4, -2.2], .55, C.skinS);
   } else {
-    o += _dot(H, R, skin);
-    const arc = (a0, a1, r, n) => Array.from({ length: n + 1 }, (_, i) => PP(a0 + (a1 - a0) * i / n, r));
-    let top, bangs, locks = '';
-    if (L.body === 'm') {
-      top = Array.from({ length: 15 }, (_, i) => PP(-15 + i * 15, i % 2 ? 16 : 13.2));
-      bangs = [[-10.8, 1.8], [-8, 5.4], [-5.5, 1.2], [-3, 5.5], [-.5, .6], [2.5, 5.2], [5, 1.2], [8, 5.4], [10.8, 1.8]].map(([x, y]) => P(x, y));
-      o += `<path d="${_poly(top.concat(bangs.reverse()))}" fill="${hair}" stroke="${hair}" stroke-width="1.2" stroke-linejoin="round"/>`;
-    } else {
-      const f = L.body === 'f', r = f ? 14.2 : 14.8;
-      top = arc(-24, 204, r, 12);
-      bangs = [[-10.4, 2], [-6.5, 4.8], [-3.2, 1.4], [0, 4.6], [3.2, 1.2], [6.8, 4.6], [10.4, 2.2]].map(([x, y]) => P(x, y));
-      const low = f ? -12 : -7.5;
-      locks = `<path d="${_smooth([P(10.2, 3), P(13.6, 1), P(13.2, low), P(10.6, low - 1.5), P(9, -2)])}" fill="${hair}"/><path d="${_smooth([P(-10.2, 3), P(-13.6, 1), P(-13.2, low), P(-10.6, low - 1.5), P(-9, -2)])}" fill="${hair}"/>`;
-      o += `<path d="${_smooth(top.concat(bangs.reverse()))}" fill="${hair}"/>` + locks;
-    }
-    o += eye(-4.7, -.9, L.body === 'f') + eye(4.7, -.9, L.body === 'f');
-    o += lid(-6.9, 2.6, -2.6, 2.8, L.body === 'f' ? 1.6 : 1.2) + lid(2.6, 2.8, 6.9, 2.6, L.body === 'f' ? 1.6 : 1.2);
-    o += _seg(P(-7, 5.6), P(-3, 6), 1.2, hair) + _seg(P(3, 6), P(7, 5.6), 1.2, hair);
-    o += [[-7.4, -4.6], [7.4, -4.6]].map(([x, y]) => `<ellipse cx="${P(x, y)[0].toFixed(1)}" cy="${P(x, y)[1].toFixed(1)}" rx="1.9" ry="1.1" fill="#ff8a8a" opacity=".32"/>`).join('');
-    o += `<path d="M${_f(P(-1.6, -6.2))} Q${_f(P(0, -7.4))} ${_f(P(1.6, -6.2))}" fill="none" stroke="#8e4747" stroke-width="1.1" stroke-linecap="round"/>`;
+    // front view
+    const face = [[-8.6, 3.2], [-8.4, -1.6], [-6.4, -6.6], [-2.6, -9.2], [0, -10.2], [2.6, -9.2], [6.4, -6.6], [8.4, -1.6], [8.6, 3.2]]
+      .concat([30, 50, 70, 90, 110, 130, 150].map(a => [9.4 * Math.cos(a * Math.PI / 180), 9.4 * Math.sin(a * Math.PI / 180) + 1.2]));
+    if (f) o += poly([[-10.6, 4], [-11.6, -6.4], [-9.4, -12.2], [-7.4, -6.8], [7.4, -6.8], [9.4, -12.2], [11.6, -6.4], [10.6, 4]], C.hair, inked);   // hair falling behind the shoulders
+    o += poly(face, C.skin, inked);
+    o += poly([[-8.3, -2.0], [-6.2, -6.8], [-2.4, -9.4], [0, -10.2], [-1.4, -8.2], [-5.0, -5.6], [-7.2, -1.8]], C.skinS);
+    [-1, 1].forEach(sx => {
+      const X = x => x * sx;
+      o += poly([[X(1.9), 0.6], [X(6.3), 0.8], [X(5.8), -1.0], [X(2.4), -0.9]], '#f3efe7');
+      const I = P(X(4.0), -0.1);
+      o += `<ellipse cx="${I[0].toFixed(1)}" cy="${I[1].toFixed(1)}" rx="1.05" ry="1.35" fill="#15121d"/>` + _dot(P(X(4.3), 0.3), .38, '#fff');
+      o += `<polyline points="${pts([[X(1.6), 0.6], [X(4.2), 1.7], [X(6.8), 0.7], [X(7.3), 0.0]]).map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ')}" fill="none" stroke="${INK}" stroke-width="${f ? 1.25 : 1.05}" stroke-linecap="round" stroke-linejoin="round"/>`;
+      o += poly([[X(1.4), 2.4], [X(7.0), 3.6], [X(7.0), 2.9], [X(1.6), 1.8]], INK);
+    });
+    o += line([0.3, -2.8], [0.9, -3.6], .6, C.skinS);
+    o += line([-1.3, -6.3], [1.3, -6.3], .7);
+    const top = {
+      m: [[-9.8, 2.4], [-11.6, 7.6], [-9.2, 8.6], [-10.6, 13.2], [-5.6, 11.6], [-4.4, 16.0], [-1.0, 12.8], [1.6, 16.6], [3.8, 12.6], [7.6, 15.2], [7.4, 10.6], [11.8, 11.6], [9.6, 7.2], [11.4, 2.6], [8.2, 4.8], [7.0, 1.6], [4.6, 5.2], [2.4, 1.6], [0.6, 5.4], [-2.0, 1.8], [-3.6, 5.4], [-6.4, 1.8], [-7.6, 5.2]],
+      f: [[-10.6, -4.0], [-11.2, 4.6], [-9.4, 10.6], [-4.4, 13.6], [1.2, 14.0], [6.4, 12.4], [10.4, 8.4], [11.2, 2.2], [10.4, -4.6], [8.4, 2.4], [6.6, 1.2], [5.6, 5.0], [3.0, 1.4], [0.8, 5.4], [-1.6, 1.0], [-3.8, 5.0], [-6.6, 1.2], [-8.6, 2.6], [-9.0, -2.0]],
+      n: [[-10.6, -2.6], [-12.2, 5.0], [-10.0, 10.4], [-8.0, 14.4], [-3.6, 12.6], [-0.8, 15.6], [2.4, 12.8], [7.4, 14.4], [8.6, 10.4], [12.0, 6.4], [10.8, 1.2], [11.2, -3.6], [8.6, -0.6], [7.4, 2.2], [5.2, 5.4], [3.0, 1.2], [0.6, 5.2], [-1.8, 1.4], [-4.2, 5.2], [-6.6, 1.6], [-8.6, 3.0], [-9.2, -1.0]]
+    }[L.body];
+    o += poly(top, C.hair, inked);
+    o += line([-6.4, 9.8], [-3.4, 11.6], 1.3, C.hairH, .8) + line([-1.6, 12.1], [2.2, 12.0], 1.3, C.hairH, .8) + line([4.0, 11.4], [6.2, 10.0], 1.1, C.hairH, .6);
+    [[[-4.6, 6.4], [-6.6, 11.4]], [[0.2, 7.0], [0.6, 13.0]], [[4.6, 6.6], [6.8, 11.6]]].forEach(([a, b]) => { o += line(a, b, .7, INK, .7); });
   }
   return o;
 }
 
+function inkNeck(s, front, C) {
+  const p = s._p || {}, U = p.nek != null ? p.nek : p.tor, top = [s.hed[0] + _d(U + 90)[0] * -1.2 * (front ? 0 : 1) + _d(U)[0] * -6.5, s.hed[1] + _d(U + 90)[1] * -1.2 * (front ? 0 : 1) + _d(U)[1] * -6.5];
+  return _chain([[pol(s.sho, p.tor, -1), top, front ? 3.9 : 3.0, front ? 3.6 : 2.6, C.skin, C.skinS]]);
+}
 /* ---------- the whole figure ---------- */
-function figSvgAnime(s, a) {
+function figSvgInk(s, a) {
   if (typeof a === 'string' || a == null) a = { prop: a };
-  const L = figLook(), front = a.view === 'front';
-  const C = { shirt: 'var(--acc)', skin: L.skin, bottom: L.body === 'f' ? '#3b2f57' : '#2c3352', shoe: '#eef1f7', sole: 'var(--acc)' };
-  const p = s._p || {};
-  // front view: arms and legs hang from the edges of a wider body, not the spine
-  let sN = s.sho, sF = s.sho, pN = s.pel, pF = s.pel, sh = [0, 0], hp = [0, 0];
-  if (front) {
-    const side = _d(p.tor + 90), spread = a.spread != null ? a.spread : 8;
-    sh = [side[0] * spread, side[1] * spread]; hp = [side[0] * 4.4, side[1] * 4.4];
-  }
+  const L = figLook(), front = a.view === 'front', p = s._p || {};
+  const C = _pal(L, false), D = _pal(L, true);
+  let sh = [0, 0], hp = [0, 0];
+  if (front) { const side = _d(p.tor + 90), spread = a.spread != null ? a.spread : 8; sh = [side[0] * spread, side[1] * spread]; hp = [side[0] * 4.4, side[1] * 4.4]; }
   const mv = (q, d, k) => [q[0] + d[0] * k, q[1] + d[1] * k];
   const armN = [mv(s.sho, sh, 1), mv(s.elb, sh, 1), mv(s.han, sh, 1)], armF = [mv(s.sho, sh, -1), mv(s.elb2, sh, -1), mv(s.han2, sh, -1)];
   const legN = [mv(s.pel, hp, 1), mv(s.kne, hp, 1), mv(s.ank, hp, 1), mv(s.toe, hp, 1)], legF = [mv(s.pel, hp, -1), mv(s.kne2, hp, -1), mv(s.ank2, hp, -1), mv(s.toe2, hp, -1)];
-  const farLeg = c => legSvg(legF[0], legF[1], legF[2], legF[3], p.ft2 != null ? p.ft2 : 0, c, L);
-  const farArm = c => armSvg(armF[0], armF[1], armF[2], c);
-  const black = { shirt: '#000', skin: '#000', bottom: '#000', shoe: '#000', sole: '#000' };
-  const torso = torsoPts(s, L, front, -0.12, 1.07), band = torsoPts(s, L, front, -0.12, 0.24);
-  const U = p.nek != null ? p.nek : p.tor;
-  return `<line x1="-40" y1="${GROUND + 3}" x2="240" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-linecap="round"/>
+  const far = front ? C : D;
+  return `${groundSvg(s, a)}
     ${sceneSvg(a.scene, s)}
-    ${farLeg(C)}${farArm(C)}
-    ${front ? '' : `<g opacity=".34">${farLeg(black)}${farArm(black)}</g>`}
+    ${inkLeg(legF[0], legF[1], legF[2], legF[3], p.ft2 != null ? p.ft2 : 0, far, L)}
+    ${inkArm(armF[0], armF[1], armF[2], far)}
     ${propSvg(a.prop, s)}
-    ${_seg(pol(s.sho, p.tor, 1), pol(s.sho, U, 11), 5.2, L.skin)}
-    <path d="${_smooth(torso)}" fill="${C.shirt}"/>
-    <path d="${_smooth(band)}" fill="${C.bottom}"/>
-    ${headSvg(s, L, front)}
-    ${legSvg(legN[0], legN[1], legN[2], legN[3], p.ft != null ? p.ft : 0, C, L)}
-    ${armSvg(armN[0], armN[1], armN[2], C)}`;
+    ${inkNeck(s, front, C)}
+    ${inkTorso(s, L, front, C)}
+    ${inkHead(s, L, front, C)}
+    ${inkLeg(legN[0], legN[1], legN[2], legN[3], p.ft != null ? p.ft : 0, C, L)}
+    ${inkArm(armN[0], armN[1], armN[2], C)}`;
 }
 /* =========================================================
    HEART RATE — zones, live BLE feed, manual fallback
@@ -1956,19 +2162,33 @@ const HR = {
    UI — router & shared
    ========================================================= */
 const app = $('#app');
-function go(hash) { location.hash = hash; }
+function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
+function a11y(root) {
+  $$('[onclick]:not(button):not(a):not(input)', root).forEach(el => { if (!el.hasAttribute('role')) el.setAttribute('role', 'button'); if (!el.hasAttribute('tabindex')) el.tabIndex = 0; });
+}
+document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.onclick) { e.preventDefault(); e.target.click(); } });
 function route() {
   const hsh = location.hash || '#/today';
   document.body.dataset.goal = S.profile ? S.profile.goal : 'general';
   document.body.classList.toggle('calm', !!S.flags.calm);
   if (!S.profile && !hsh.startsWith('#/onboard') && !hsh.startsWith('#/invite')) { location.hash = '#/onboard'; return; }
-  window.scrollTo(0, 0);
+  const pg = hsh.split('/')[1], A0 = S.active;
+  const viewKey = hsh + '|' + (pg === 'onboard' ? OB.step : pg === 'session' && A0 ? A0.stage + (A0.ridePart || '') + (A0.calibQ ? A0.calibQ.length : '') : '');
+  const samePage = route._hash === hsh, keepY = route._key === viewKey ? window.scrollY : 0;
+  route._key = viewKey;
+  const leaving = route._hash && route._hash.split('/')[1];
+  if (!samePage) { $$('.sheetBg').forEach(s => s.remove()); const cue = document.getElementById('cue'); if (cue && !hsh.startsWith('#/session')) cue.classList.remove('show'); }
+  if (!samePage && leaving === 'profile' && S.profile && ProfileEdit.changed()) { S.swaps = {}; buildProgram(); setTimeout(() => toast('Plan updated to match your profile'), 50); }
+  if (!samePage && (leaving === 'profile' || pg === 'profile')) ProfileEdit._snap = null;
+  route._hash = hsh; route._day = todayStr();
   const [_, page, arg] = hsh.split('/');
   const views = { onboard: Onboard, today: Today, plan: Plan, progress: Progress, fuel: Fuel, more: More, session: Session, setup: Setup, library: Library, invite: Invite, weigh: Weigh, history: History, profile: ProfileEdit };
   const v = views[page] || Today;
   app.innerHTML = v.render(arg);
   if (v.mount) v.mount(arg);
   renderTabs(page);
+  a11y(app);
+  window.scrollTo(0, keepY);
   Figure.mountAll();
 }
 function renderTabs(page) {
@@ -1982,6 +2202,7 @@ function sheet(html, onMount) {
   bg.innerHTML = `<div class="sheet"><div class="handle"></div>${html}</div>`;
   bg.addEventListener('click', e => { if (e.target === bg) bg.remove(); });
   document.body.appendChild(bg);
+  a11y(bg);
   if (onMount) onMount(bg);
   Figure.mountAll();
   return bg;
@@ -1993,12 +2214,13 @@ function closeSheet() { const s = $('.sheetBg'); if (s) s.remove(); Figure.mount
    ONBOARDING
    ========================================================= */
 const OB = { step: 0, d: { gender: null, age: 35, units: 'lb', heightCm: null, weightKg: null, targetKg: null, setting: null, equipment: [], goal: null, days: [1, 3, 5], minutes: 45, cardioLevel: 'beg', name: '', mtbDays: [], rideMinutes: 90 } };
+document.addEventListener('input', () => { if (typeof Onboard !== 'undefined' && document.getElementById('obNext')) Onboard.check(); });
 const Onboard = {
   steps: ['welcome', 'you', 'body', 'where', 'gear', 'goal', 'when', 'level', 'done'],
   render() {
     const st = Onboard.steps[OB.step]; const d = OB.d;
     const prog = `<div class="steps">${Onboard.steps.map((s, i) => `<i class="${i <= OB.step ? 'on' : ''}"></i>`).join('')}</div>`;
-    const nav = (canNext, label) => `<div class="mt2 stack"><button onclick="Onboard.next()" ${canNext ? '' : 'disabled'}>${label || 'Continue'}</button>${OB.step > 0 ? '<button class="ghost" onclick="Onboard.back()">Back</button>' : ''}</div>`;
+    const nav = (canNext, label) => `<div class="mt2 stack"><button id="obNext" onclick="Onboard.next()" ${canNext ? '' : 'disabled'}>${label || 'Continue'}</button>${OB.step > 0 ? '<button class="ghost" onclick="Onboard.back()">Back</button>' : ''}</div>`;
     if (st === 'welcome') return h`<div class="fade">
       <div class="card hero glow" style="min-height:240px"><div class="heroArt">${Art.rocket(false)}</div><div class="heroBody"><div class="eyebrow">Tailored Workout</div><h1>Built around you.<br>Not the other way round.</h1></div></div>
       <p class="mute mt">A few questions, then a plan that fits your gear, your days, and how you actually feel each morning.</p>
@@ -2009,16 +2231,18 @@ const Onboard = {
       <label class="mt">Gender</label><div class="chips">${[['male', 'Male'], ['female', 'Female'], ['other', 'Other / prefer not to say']].map(([k, l]) => `<span class="chip ${d.gender === k ? 'on' : ''}" onclick="OB.d.gender='${k}';route()">${l}</span>`).join('')}</div>
       <label class="mt">Age</label><input type="number" inputmode="numeric" value="${d.age}" oninput="OB.d.age=+this.value">
       <label class="mt">Units</label><div class="chips">${[['lb', 'Pounds, feet & inches'], ['kg', 'Kilograms & centimetres']].map(([k, l]) => `<span class="chip ${d.units === k ? 'on' : ''}" onclick="OB.d.units='${k}';route()">${l}</span>`).join('')}</div>
-      ${nav(!!d.gender && d.age > 12)}</div>`;
+      <div id="obHint" class="small warn mt" role="status" aria-live="polite">${Onboard.hint()}</div>
+      ${nav(Onboard.valid())}</div>`;
     if (st === 'body') {
       const lb = d.units === 'lb';
-      const ft = d.heightCm ? Math.floor(d.heightCm / CM / 12) : '', inch = d.heightCm ? Math.round(d.heightCm / CM - ft * 12) : '';
+      const tin = d.heightCm ? Math.round(d.heightCm / CM) : 0, ft = d.heightCm ? Math.floor(tin / 12) : '', inch = d.heightCm ? tin % 12 : '';
       return h`<div class="fade">${prog}<h2>Height & weight</h2><p class="mute">Your target weight sets the direction. The app checks it against a sensible pace before it ever suggests a number.</p>
       <label class="mt">Height</label>${lb ? `<div class="inline"><input type="number" inputmode="numeric" placeholder="ft" value="${ft}" oninput="Onboard.setH()" id="hft"><input type="number" inputmode="numeric" placeholder="in" value="${inch}" oninput="Onboard.setH()" id="hin"></div>` : `<input type="number" inputmode="decimal" placeholder="cm" value="${d.heightCm ? Math.round(d.heightCm) : ''}" oninput="OB.d.heightCm=+this.value">`}
       <label class="mt">Current weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${d.weightKg ? +(lb ? d.weightKg / KG : d.weightKg).toFixed(1) : ''}" oninput="OB.d.weightKg=${lb ? '+this.value*KG' : '+this.value'}">
       <label class="mt">Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${d.targetKg ? +(lb ? d.targetKg / KG : d.targetKg).toFixed(1) : ''}" oninput="OB.d.targetKg=${lb ? '+this.value*KG' : '+this.value'}">
       <div class="mute small mt">Same as current is fine — that means maintain.</div>
-      ${nav(d.heightCm > 100 && d.weightKg > 25 && d.targetKg > 25)}</div>`;
+      <div id="obHint" class="small warn mt" role="status" aria-live="polite">${Onboard.hint()}</div>
+      ${nav(Onboard.valid())}</div>`;
     }
     if (st === 'where') return h`<div class="fade">${prog}<h2>Where will you train?</h2><div class="stack mt">
       ${[['gym', 'Gym membership', 'Full equipment assumed'], ['home_eq', 'Home, with some equipment', 'You tell me what you have'], ['home_none', 'Home, no gear', 'Bodyweight only — nothing to buy']].map(([k, t, dd]) => `<button class="optcard ${d.setting === k ? 'on' : ''}" onclick="OB.d.setting='${k}';if('${k}'==='home_none'){OB.d.equipment=[];OB.d.mtbDays=[];}route()"><div class="ic">${k === 'gym' ? '🏋️' : k === 'home_eq' ? '🏠' : '🌤️'}</div><div><div class="t">${t}</div><div class="d">${dd}</div></div></button>`).join('')}
@@ -2049,7 +2273,25 @@ const Onboard = {
   tog(k) { const e = OB.d.equipment; const i = e.indexOf(k); if (i > -1) e.splice(i, 1); else e.push(k); route(); },
   togDay(i) { const dd = OB.d.days; const j = dd.indexOf(i); if (j > -1) { dd.splice(j, 1); const k = OB.d.mtbDays.indexOf(i); if (k > -1) OB.d.mtbDays.splice(k, 1); } else dd.push(i); route(); },
   togMtb(i) { if (!OB.d.days.includes(i)) { toast('Pick it as a training day first'); return; } const dd = OB.d.mtbDays; const j = dd.indexOf(i); if (j > -1) dd.splice(j, 1); else dd.push(i); route(); },
-  next() { OB.step++; if (Onboard.steps[OB.step] === 'gear' && OB.d.setting === 'home_none') OB.step++; if (Onboard.steps[OB.step] === 'done') { Onboard.commit(); } route(); },
+  // are this step's answers complete? typed fields don't redraw the screen, so this is re-checked on every keystroke
+  valid() {
+    const d = OB.d, st = Onboard.steps[OB.step];
+    if (st === 'you') return !!d.gender && d.age >= 13 && d.age <= 100;
+    if (st === 'body') return d.heightCm >= 120 && d.heightCm <= 230 && d.weightKg >= 30 && d.weightKg <= 300 && d.targetKg >= 30 && d.targetKg <= 300;
+    return true;
+  },
+  // says why Continue is off, but only once a field has something in it
+  hint() {
+    const d = OB.d, st = Onboard.steps[OB.step], lb = d.units === 'lb';
+    if (st === 'you') return d.age && (d.age < 13 || d.age > 100) ? 'Age should be between 13 and 100.' : '';
+    if (st !== 'body') return '';
+    if (d.heightCm && (d.heightCm < 120 || d.heightCm > 230)) return 'Height looks off. ' + (lb ? 'Use feet in the first box and inches in the second.' : 'Enter it in centimetres.');
+    if (d.weightKg && (d.weightKg < 30 || d.weightKg > 300)) return 'Current weight looks off. Check the number' + (lb ? ' (in pounds).' : ' (in kilograms).');
+    if (d.targetKg && (d.targetKg < 30 || d.targetKg > 300)) return 'Target weight looks off. Check the number.';
+    return '';
+  },
+  check() { const b = document.getElementById('obNext'); if (b) b.disabled = !Onboard.valid(); const h = document.getElementById('obHint'); if (h) h.textContent = Onboard.hint(); },
+  next() { if (!Onboard.valid()) return; OB.step++; if (Onboard.steps[OB.step] === 'gear' && OB.d.setting === 'home_none') OB.step++; if (Onboard.steps[OB.step] === 'done') { Onboard.commit(); } route(); },
   back() { OB.step = Math.max(0, OB.step - 1); if (Onboard.steps[OB.step] === 'gear' && OB.d.setting === 'home_none') OB.step = Math.max(0, OB.step - 1); route(); },
   commit() {
     const d = OB.d;
@@ -2083,7 +2325,7 @@ const Today = {
     const nx = nextPlan();
     let hero;
     if (doneToday) hero = h`<div class="card hero glow"><div class="heroArt">${Art.rocket(false)}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>Done. ${esc(doneToday.title)}</h2><div class="mute small">${doneToday.minutes} min · ~${doneToday.calories} kcal${doneToday.synced ? ' · in Apple Health' : ''}</div>${!doneToday.synced ? `<div class="mt"><button class="sm" onclick="Session.syncHealth('${doneToday.id}')">Save to Apple Health</button></div>` : ''}</div></div>`;
-    else if (plan) hero = h`<div class="card hero glow"><div class="heroArt">${Art.hero(plan.kind)}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>${esc(plan.title)}</h2><div class="mute small">${plan.kind === 'strength' ? plan.exercises.length + ' exercises' : plan.kind === 'cardio' ? CARDIOMAP[plan.cardio.modeId].n + ' · ' + plan.cardio.structure : plan.moves.length + ' moves'} · about ${p.minutes} min</div><div class="mt"><button onclick="Session.start(${plan.idx})">Start session</button></div></div></div>`;
+    else if (plan) hero = h`<div class="card hero glow"><div class="heroArt">${Art.hero(plan.kind)}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>${esc(plan.title)}</h2><div class="mute small">${plan.kind === 'strength' ? plan.exercises.length + ' exercises' : plan.kind === 'cardio' ? CARDIOMAP[plan.cardio.modeId].n + ' · ' + plan.cardio.structure : plan.kind === 'ride' ? 'Mountain bike, plus stretching' : (plan.moves || []).length + ' moves'} · about ${fmtMins(plan.kind === 'ride' ? plan.ride.minutes : p.minutes)}</div><div class="mt"><button onclick="Session.start(${plan.idx})">Start session</button></div></div></div>`;
     else hero = h`<div class="card hero"><div class="heroArt">${Art.hero('rest')}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>Rest day</h2><div class="mute small">${nx ? 'Next up: ' + esc(nx.w.title) + ' ' + (nx.inDays === 1 ? 'tomorrow' : 'in ' + nx.inDays + ' days') : ''}</div><div class="mt row"><button class="sm sec" onclick="Session.pickAny()">Train anyway</button></div></div></div>`;
     const swapLine = (plan && !doneToday) ? h`<div class="row" style="justify-content:center"><button class="sm ghost" style="width:auto" onclick="Session.start(${plan.idx});setTimeout(Session.pickType,60)">Not today — do something else</button></div>` : '';
     const rl = r ? r.level : null;
@@ -2094,7 +2336,21 @@ const Today = {
     const wcard = h`<div class="card"><div class="eyebrow">Weight trend</div><div class="big num" style="font-size:1.8rem">${fmtWn(trendSeries().slice(-1)[0] ? trendSeries().slice(-1)[0].trend : curWeightKg())}<span class="mute small"> ${unitW()}</span></div><div class="mute small">${S.weights.length} weigh-ins</div><div class="row mt"><button class="sm sec" onclick="go('#/weigh')">Weigh in</button></div></div>`;
     const skipNote = skip.mode !== 'ok' ? h`<div class="card" style="border-color:color-mix(in srgb,var(--warn) 40%,transparent)"><b class="warn">${skip.mode === 'reset' ? 'Welcome back' : 'Missed a couple'}</b><div class="mute small">${skip.mode === 'reset' ? "It's been a while. Your next session restarts at 85% of previous loads. No penalty — just safer." : skip.missed + ' planned sessions missed. Your next session is eased back slightly so you can get moving again without a wall.'}</div></div>` : '';
     return h`<div class="fade"><div class="topbar"><div><div class="mute small">${greet}${p.name ? ', ' + esc(p.name) : ''}</div><h1>${niceDate(todayStr())}</h1></div><div class="pill">${DAYS[new Date().getDay()]}</div></div>
-      <div class="stack">${hero}${swapLine}${lengthCard()}${skipNote}${readyCard}<div class="grid2">${streakCard}${wcard}</div></div></div>`;
+      <div class="stack">${Today.resumeCard()}${hero}${swapLine}${Today.backupCard()}${lengthCard()}${skipNote}${readyCard}<div class="grid2">${streakCard}${wcard}</div></div></div>`;
+  },
+  backupCard() {
+    if (S.sessions.length < 3) return '';
+    const last = S.seen.lastBackup || S.seen.onboardedAt;
+    if (last && daysBetween(last, todayStr()) < 30) return '';
+    return h`<div class="card"><div class="between"><div><b>Back up your data</b><div class="mute small">Everything lives only on this phone. A monthly backup to Files or iCloud Drive keeps it safe.</div></div></div><div class="row mt"><button class="sm" onclick="More.exportJson();route()">Back up now</button><button class="sm ghost" onclick="S.seen.lastBackup=todayStr();save();route()">Later</button></div></div>`;
+  },
+  resumeCard() {
+    const a = S.active; if (!a || !a.stage || a.stage === 'done') return '';
+    const when = dstr(new Date(a.startedAt)) === todayStr() ? 'today' : niceDate(dstr(new Date(a.startedAt)));
+    const prog = Session.hasProgress(a);
+    return h`<div class="card" style="border-color:var(--acc)"><div class="eyebrow">Unfinished session · ${esc(when)}</div><h3>${esc((a.sess || a.base).title)}</h3>
+      <div class="mute small">${prog ? 'Your progress so far is kept.' : 'Nothing logged yet.'}</div>
+      <div class="row mt"><button class="sm" onclick="go('#/session')">Resume</button>${prog ? `<button class="sm sec" onclick="Session.saveWhatsDone()">Save what I did</button>` : ''}<button class="sm ghost" onclick="Session.abandon()">Discard</button></div></div>`;
   },
   ignoreReady() { const r = S.readiness.find(x => x.date === todayStr()); if (r) { r.ignored = !r.ignored; save(); route(); } },
   manualReady() {
@@ -2127,7 +2383,7 @@ const Plan = {
         const thisWeekDate = addDays(todayStr(), d - dow);
         const isDone = done.has(thisWeekDate);
         if (!w) return `<div class="item" style="opacity:.55"><div class="tag">${n}</div><div class="grow"><div class="title mute">Rest</div></div></div>`;
-        const sub = w.kind === 'strength' ? w.exercises.map(e => EXMAP[e.exId].n).join(' · ') : w.kind === 'cardio' ? CARDIOMAP[w.cardio.modeId].n + ' · ' + w.cardio.label : w.moves.map(m => MOBMAP[m].n).join(' · ');
+        const sub = w.kind === 'strength' ? w.exercises.map(e => EXMAP[e.exId].n).join(' · ') : w.kind === 'cardio' ? CARDIOMAP[w.cardio.modeId].n + ' · ' + w.cardio.label : w.kind === 'ride' ? 'Mountain bike · about ' + fmtMins(w.ride.minutes) + ' · plus stretching' : (w.moves || []).map(m => MOBMAP[m].n).join(' · ');
         return `<div class="item ${d === dow ? 'glow' : ''}" style="${d === dow ? 'border-color:var(--acc)' : ''}"><div class="tag ${isDone ? 'good' : d === dow ? 'acc' : ''}">${n}</div><div class="grow"><div class="title">${esc(w.title)} ${isDone ? '✓' : ''}</div><div class="sub">${esc(sub)}</div></div><button class="icon" onclick="Plan.detail(${w.idx})">›</button></div>`;
       }).join('')}</div>
       <div class="stack mt2"><button class="sec" onclick="Plan.regen()">Rebuild plan</button><button class="ghost" onclick="go('#/profile')">Change goal, days or gear</button></div>
@@ -2137,8 +2393,9 @@ const Plan = {
     const w = S.program.week[idx];
     let body = '';
     if (w.kind === 'strength') body = `<div class="list">${w.exercises.map((e, i) => { const ex = EXMAP[e.exId]; const t = targetFor(e); return `<div class="item"><div class="figthumb">${Figure.svg('ex', ex.id)}</div><div class="grow"><div class="title">${esc(ex.n)}</div><div class="sub">${e.sets} × ${e.lo}–${e.hi}${t.weight != null ? ' · ' + fmtW(t.weight) : ex.bwOnly ? ' · bodyweight' : ' · pick a weight'}</div></div><button class="icon" onclick="Plan.swap(${idx},${i})">Swap</button></div>`; }).join('')}</div>${w.cardio ? `<div class="mt small mute">Finisher: ${CARDIOMAP[w.cardio.modeId].n}, ${w.cardio.minutes} min</div>` : ''}${w.mobility && w.mobility.length ? `<div class="mt small mute">Warm-up mobility: ${w.mobility.map(m => MOBMAP[m].n).join(', ')}</div>` : ''}`;
-    else if (w.kind === 'cardio') body = `<div class="figbox mb">${Figure.svg('cardio', w.cardio.modeId)}</div><div class="card2"><b>${CARDIOMAP[w.cardio.modeId].n}</b><div class="mute small">${esc(w.cardio.label)}</div><div class="mt list">${w.cardio.phases.map(ph => `<div class="item"><div class="tag ${ph.k === 'hard' ? 'hot' : ''}">${ph.k}</div><div class="grow">${esc(ph.label)}</div><div class="num mute">${Math.round(ph.sec / 60)}:${String(ph.sec % 60).padStart(2, '0')}</div></div>`).join('')}</div></div>`;
-    else body = `<div class="list">${w.moves.map(m => `<div class="item"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div><div class="sub">${esc(MOBMAP[m].cue)}</div></div><div class="num mute">${w.holdSec}s</div></div>`).join('')}</div><div class="mute small mt">${w.rounds} round${w.rounds > 1 ? 's' : ''}</div>`;
+    else if (w.kind === 'cardio') body = `<div class="figbox mb">${Figure.svg('cardio', w.cardio.modeId)}</div><div class="card2"><b>${CARDIOMAP[w.cardio.modeId].n}</b><div class="mute small">${esc(w.cardio.label)}</div><div class="mt list">${w.cardio.phases.map(ph => `<div class="item"><div class="tag ${ph.k === 'hard' ? 'hot' : ''}">${ph.k}</div><div class="grow">${esc(ph.label)}</div><div class="num mute">${Math.floor(ph.sec / 60)}:${String(ph.sec % 60).padStart(2, '0')}</div></div>`).join('')}</div></div>`;
+    else if (w.kind === 'ride') body = `<div class="figbox mb">${Figure.svg('cardio', 'mtb')}</div><div class="card2"><b>Mountain bike · about ${fmtMins(w.ride.minutes)}</b><div class="mute small">Stretch before and after. The trail sets the effort.</div></div><div class="mute small mt">Before: ${(w.warmMob || []).map(m => esc(MOBMAP[m].n)).join(', ')}</div><div class="mute small">After: ${(w.coolMob || []).map(m => esc(MOBMAP[m].n)).join(', ')}</div>`;
+    else body = `<div class="list">${(w.moves || []).map(m => `<div class="item"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div><div class="sub">${esc(MOBMAP[m].cue)}</div></div><div class="num mute">${w.holdSec}s</div></div>`).join('')}</div><div class="mute small mt">${w.rounds} round${w.rounds > 1 ? 's' : ''}</div>`;
     sheet(`<h3>${esc(w.title)} · ${DAYSL[w.day]}</h3><div class="mt">${body}</div><div class="stack mt2"><button onclick="closeSheet();Session.start(${idx})">Start this session</button><button class="ghost" onclick="closeSheet()">Close</button></div>`);
   },
   swap(idx, slot) {
@@ -2156,7 +2413,24 @@ const Plan = {
    ========================================================= */
 let TMR = null;
 const Session = {
+  hasProgress(a) {
+    a = a || S.active; if (!a || a.stage === 'precheck' || a.stage === 'done') return false;
+    return (a.entries || []).some(e => e.sets.some(s => s.done)) || (a.rideSec || 0) > 60 || (a.mobIdx || 0) > 0 || (a.phaseIdx || 0) > 0 || !!a.cardio;
+  },
+  // finish a session that was left open, recording only what was actually done
+  saveWhatsDone() {
+    const a = S.active; if (!a) return;
+    clearInterval(TMR);
+    if (a.sess && a.sess.kind === 'ride' && !a.ride && a.rideSec) a.ride = { modeId: 'mtb', minutes: Math.max(1, Math.round(Session.rideSecNow(a) / 60)), effort: 'mod', distanceKm: null };
+    if (a.sess && (a.sess.kind === 'cardio' || a.stage === 'tail') && !(a.cardio && a.cardio.minutes)) {
+      const c = a.sess.cardio, el = c.phases.slice(0, a.phaseIdx).reduce((n, p) => n + p.sec, 0) + (c.phases[a.phaseIdx] ? c.phases[a.phaseIdx].sec - (a.phaseLeft ?? c.phases[a.phaseIdx].sec) : 0);
+      a.cardio = { modeId: c.modeId, minutes: Math.max(1, Math.round(el / 60)), effort: 'mod', distanceKm: null };
+    }
+    Session.complete();
+    toast('Saved what you logged', 3000);
+  },
   start(idx, codeOverride) {
+    if (Session.hasProgress() && !confirm('You have an unfinished session with progress logged. Start a new one and discard it?')) { go('#/session'); return; }
     const w = S.program.week[idx];
     const code = codeOverride || w.type;
     const def = code === 'MTB' ? (S.profile.rideMinutes || 90) : S.profile.minutes;
@@ -2232,6 +2506,7 @@ const Session = {
     a.calibQ = (sess.exercises || []).filter(e => { const ex = EXMAP[e.exId]; return !S.loads[ex.id] && !S.calib[ex.id]; }).map(e => e.exId);
     if (sess.kind === 'strength') a.entries = sess.exercises.map(e => { const t = targetFor(e); return { exId: e.exId, lo: e.lo, hi: e.hi, subbed: e.subbed || null, sets: Array.from({ length: e.sets }, () => ({ reps: t.reps, weight: t.weight, rpe: null, done: false })) }; });
     a.stage = a.calibQ.length ? 'calib' : 'work';
+    a.startedAt = Date.now();
     a.phaseIdx = 0; a.phaseLeft = null; a.paused = false; a.mobIdx = 0; a.rideSec = 0; a.ridePart = 'warm'; a.hrAsk = 0;
     save(); route();
   },
@@ -2248,9 +2523,9 @@ const Session = {
       <div class="stack mt2"><button onclick="Session.calibSave('${exId}')">Set my starting point</button><button class="ghost" onclick="Session.calibSkip('${exId}')">Skip — I'll pick weights as I go</button></div></div></div>`;
   },
   calibSave(exId) {
-    const ex = EXMAP[exId]; const reps = +$('#cReps').value; if (!reps) { toast('Enter a number first'); return; }
+    const ex = EXMAP[exId]; const reps = Math.round(+$('#cReps').value); if (!(reps >= 1 && reps <= (ex.timed ? 600 : 100))) { toast('Enter a number first'); return; }
     if (ex.bwOnly) { S.calib[exId] = { maxReps: reps, testedAt: todayStr() }; S.loads[exId] = { weight: null, reps: Math.max(ex.timed ? 15 : 3, Math.round(reps * 0.6)) }; }
-    else { const w = toKg(+$('#cW').value); if (!w) { toast('Enter the weight too'); return; } S.calib[exId] = { e1rm: e1rm(w, Math.min(reps, 15)), testedAt: todayStr() }; }
+    else { const w = toKg(+$('#cW').value); if (!(w > 0 && w < 500)) { toast('Enter the weight too'); return; } S.calib[exId] = { e1rm: e1rm(w, Math.min(reps, 15)), testedAt: todayStr() }; }
     Session.calibNext(exId, true);
   },
   calibSkip(exId) { S.calib[exId] = { skipped: true, testedAt: todayStr() }; Session.calibNext(exId, false); },
@@ -2279,9 +2554,9 @@ const Session = {
       <div class="stack mt2"><button onclick="Session.finishStrength()">Finish session</button></div></div>`;
   },
   cue(exId) { const ex = EXMAP[exId]; sheet(`<h3>${esc(ex.n)}</h3><div class="figbox mt">${Figure.svg('ex', ex.id)}</div><p class="mt">${esc(ex.cue)}</p><p class="mute small">Loads: ${ex.reg.length ? ex.reg.map(r => REGIONS.find(x => x[0] === r)[1]).join(', ') : 'low joint stress'}</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
-  setW(ei, si, v) { const s = S.active.entries[ei].sets[si]; s.weight = v === '' ? null : toKg(+v); if (si === 0) S.active.entries[ei].sets.slice(1).forEach(x => { if (!x.done) x.weight = s.weight; }); save(); },
-  setR(ei, si, v) { S.active.entries[ei].sets[si].reps = +v || 0; save(); },
-  setE(ei, si, v) { S.active.entries[ei].sets[si].rpe = +v || null; save(); },
+  setW(ei, si, v) { const s = S.active.entries[ei].sets[si]; s.weight = v === '' || !(+v > 0) ? null : toKg(+v); if (si === 0) S.active.entries[ei].sets.slice(1).forEach(x => { if (!x.done) x.weight = s.weight; }); save(); },
+  setR(ei, si, v) { S.active.entries[ei].sets[si].reps = clamp(Math.round(+v) || 0, 0, 500); save(); },
+  setE(ei, si, v) { S.active.entries[ei].sets[si].rpe = +v ? clamp(+v, 1, 10) : null; save(); },
   tick(ei, si) { const s = S.active.entries[ei].sets[si]; s.done = !s.done; save(); route(); if (navigator.vibrate) navigator.vibrate(12); },
   addSet(ei) { const e = S.active.entries[ei]; const last = e.sets[e.sets.length - 1]; e.sets.push({ reps: last.reps, weight: last.weight, rpe: null, done: false }); save(); route(); },
   checkin(v) {
@@ -2330,7 +2605,11 @@ const Session = {
       if (a.phaseLeft % 10 === 0) save();
     }, 1000);
   },
-  pause() { const a = S.active; a.paused = !a.paused; save(); route(); },
+  pause() {
+    const a = S.active; a.paused = !a.paused;
+    if (a.ridePart === 'ride' && a.rideT0) { if (a.paused) a.pausedAt = Date.now(); else { a.ridePausedMs = (a.ridePausedMs || 0) + (Date.now() - (a.pausedAt || Date.now())); a.pausedAt = null; } }
+    save(); route();
+  },
   skipPhase() { const a = S.active; a.phaseIdx++; if (a.phaseIdx >= a.sess.cardio.phases.length) { Session.finishCardio(); return; } a.phaseLeft = a.sess.cardio.phases[a.phaseIdx].sec; save(); route(); },
   finishCardio() {
     clearInterval(TMR); const a = S.active; const c = a.sess.cardio;
@@ -2397,20 +2676,28 @@ const Session = {
       <div class="card mt"><b>Stop if</b><div class="mute small">you get chest pain, feel faint, or can't catch your breath on a descent. Ride back out, don't push through.</div></div>
       <div class="stack mt2"><button onclick="Session.endRide()">Finished riding</button></div></div>`;
   },
+  rideSecNow(a) {
+    if (!a.rideT0) return a.rideSec || 0;
+    const pausedNow = a.paused && a.pausedAt ? Date.now() - a.pausedAt : 0;
+    return Math.max(0, Math.floor((Date.now() - a.rideT0 - (a.ridePausedMs || 0) - pausedNow) / 1000));
+  },
   rideTick() {
     clearInterval(TMR);
     TMR = setInterval(() => {
-      const a = S.active; if (!a || a.paused || a.ridePart !== 'ride') return;
-      a.rideSec++;
+      const a = S.active; if (!a || a.ridePart !== 'ride') return;
+      a.rideSec = Session.rideSecNow(a);
       const el = $('.stopwatch'); if (el) el.textContent = Math.floor(a.rideSec / 60) + ':' + String(a.rideSec % 60).padStart(2, '0');
+      if (a.paused) return;
       Session.hrVoice(3);
-      if (!HR.live && a.rideSec > 0 && a.rideSec % 600 === 0 && Date.now() - (a.hrAsk || 0) > 480000) { a.hrAsk = Date.now(); if (navigator.vibrate) navigator.vibrate(120); Session.askHR(3); }
+      const block = Math.floor(a.rideSec / 600);
+      if (!HR.live && block > (a.hrBlock || 0) && Date.now() - (a.hrAsk || 0) > 480000 && !$('.sheetBg')) { a.hrBlock = block; a.hrAsk = Date.now(); if (navigator.vibrate) navigator.vibrate(120); Session.askHR(3); }
       if (a.rideSec % 15 === 0) save();
     }, 1000);
   },
-  startRide() { const a = S.active; a.ridePart = 'ride'; a.mobIdx = 0; save(); route(); },
+  startRide() { const a = S.active; a.ridePart = 'ride'; a.mobIdx = 0; a.rideT0 = Date.now(); a.ridePausedMs = 0; a.pausedAt = null; a.paused = false; Awake.on(); save(); route(); },
   endRide() {
     clearInterval(TMR); const a = S.active;
+    a.rideSec = Session.rideSecNow(a);
     a.ride = { modeId: 'mtb', minutes: Math.max(1, Math.round(a.rideSec / 60)), effort: null, distanceKm: null };
     sheet(h`<h3>How was the ride?</h3><div class="stack mt"><button class="sec" onclick="Session.rideEffort('easy')">Cruisy — mostly flat and chatting</button><button class="sec" onclick="Session.rideEffort('mod')">Solid — some climbing, working</button><button class="sec" onclick="Session.rideEffort('hard')">Big one — lots of climbing, cooked</button></div>
       <label class="mt2">Distance (optional, ${useLb() ? 'miles' : 'km'})</label><input id="cd" type="number" inputmode="decimal" placeholder="—">`);
@@ -2435,10 +2722,25 @@ const Session = {
   hrNoop() { },
 
   /* ----- complete ----- */
+  // minutes you actually trained. If the session was left open (forgot to press Finish), use the last thing you logged instead.
+  realMinutes(a) {
+    const el = (Date.now() - a.startedAt) / 60000, planned = a.minutes || (S.profile && S.profile.minutes) || 45;
+    if (el <= Math.max(planned * 2, planned + 45)) return { minutes: Math.max(1, Math.round(el)), capped: false };
+    let est = planned;
+    const ticks = []; (a.entries || []).forEach(e => e.sets.forEach(s => { if (s.done && s.at) ticks.push(s.at); }));
+    if (ticks.length) est = (Math.max(...ticks) - a.startedAt) / 60000 + 2;
+    if (a.sess.kind === 'cardio' && a.cardio) est = a.cardio.minutes + 2;
+    if (a.sess.kind === 'ride' && a.ride) est = a.ride.minutes + ((a.sess.warmMob || []).length + (a.sess.coolMob || []).length) * ((a.sess.holdSec || 40) + 15) / 60;
+    if (a.sess.kind === 'mobility') est = (a.mobIdx || 1) * ((a.sess.holdSec || 45) + 15) / 60;
+    if (a.cardio && a.sess.kind === 'strength') est += a.cardio.minutes;
+    return { minutes: Math.max(1, Math.round(Math.min(est, el))), capped: true };
+  },
   complete() {
     clearInterval(TMR);
-    const a = S.active; const p = S.profile;
-    const minutes = Math.max(1, Math.round((Date.now() - a.startedAt) / 60000));
+    const a = S.active; if (!a || !a.sess) { go('#/today'); return; }
+    const p = S.profile;
+    const rm = Session.realMinutes(a), minutes = rm.minutes;
+    if (rm.capped) setTimeout(() => toast('Recorded as ' + minutes + ' min — the session was left open after you finished.', 4500), 400);
     let kcal = 0, kind = a.sess.kind;
     if (kind === 'strength') { const strengthMin = a.cardio ? Math.max(5, minutes - a.cardio.minutes) : minutes; kcal += kcalFor('strength', strengthMin); }
     if (a.cardio) kcal += kcalFor('cardio', a.cardio.minutes, a.cardio.effort, a.cardio.modeId);
@@ -2446,7 +2748,7 @@ const Session = {
     if (kind === 'mobility') kcal += kcalFor('mobility', minutes);
     const prevPRs = Object.fromEntries(Object.entries(S.loads).map(([k, v]) => [k, v.pr || 0]));
     const hrAvg = HR.avg(), hrPeak = HR.peak();
-    const rec = { id: a.id, date: todayStr(), idx: a.idx, type: a.sess.type, title: a.sess.title, kind, entries: a.entries, cardio: a.cardio || a.ride, ride: !!a.ride, minutes, planned: a.minutes, calories: kcal, injuries: a.injuries, notes: a.notes, checkin: a.checkin, hrAvg, hrPeak, synced: false, feedback: null };
+    const rec = { id: a.id, date: dstr(new Date(a.startedAt)), idx: a.idx, type: a.sess.type, title: a.sess.title, kind, entries: a.entries, cardio: a.cardio || a.ride, ride: !!a.ride, minutes, planned: a.minutes, calories: kcal, injuries: a.injuries, notes: a.notes, checkin: a.checkin, hrAvg, hrPeak, synced: false, feedback: null };
     if (kind === 'strength') progressAfter(rec);
     HR.hist = [];
     rec.prs = Object.entries(S.loads).filter(([k, v]) => (v.pr || 0) > (prevPRs[k] || 0) && prevPRs[k] > 0).map(([k]) => EXMAP[k].n);
@@ -2454,6 +2756,7 @@ const Session = {
   },
   rDone(a) {
     const s = S.sessions.find(x => x.id === a.result);
+    if (!s) { S.active = null; save(); return `<div class="fade"><p>Session saved.</p><button onclick="go('#/today')">Back to today</button></div>`; }
     return h`<div class="fade center"><div class="card hero glow" style="min-height:260px"><div class="heroArt">${s.prs && s.prs.length ? Art.sparks() : Art.rocket(true)}</div><div class="heroBody"><div class="eyebrow">Session complete</div><h1>${esc(s.title)}</h1><div class="mute">${s.minutes} min · about ${s.calories} kcal${s.prs && s.prs.length ? ' · new best: ' + s.prs.map(esc).join(', ') : ''}</div></div></div>
       <div class="card mt" style="text-align:left"><b>How did that feel overall?</b><div class="grid3 mt"><button class="sm ${s.feedback === 'easy' ? '' : 'sec'}" onclick="Session.feedback('easy')">Too easy</button><button class="sm ${s.feedback === 'right' ? '' : 'sec'}" onclick="Session.feedback('right')">About right</button><button class="sm ${s.feedback === 'hard' ? '' : 'sec'}" onclick="Session.feedback('hard')">Too hard</button></div><div class="mute tiny mt">Nudges next week's loads by about 5% either way.</div></div>
       <div class="stack mt2">${s.synced ? '<div class="pill on">Saved to Apple Health</div>' : `<button onclick="Session.syncHealth('${s.id}')">Save to Apple Health</button>`}<button class="ghost" onclick="Session.close()">Back to today</button></div></div>`;
@@ -2717,7 +3020,8 @@ Object.assign(Session, {
     clearInterval(TMR);
     const a = S.active; if (!a) return; const c = a.sess.cardio; if (!c) return;
     if (a.phaseLeft == null) { a.phaseLeft = c.phases[0].sec; Session.phaseCue(c.phases[0], true); }
-    a.lastTick = Date.now(); Awake.on();
+    if (!a.lastTick || a.paused || Date.now() - a.lastTick > 4 * 3600000) a.lastTick = Date.now();
+    Awake.on();
     TMR = setInterval(() => {
       const a = S.active; if (!a) { clearInterval(TMR); return; }
       const now = Date.now();
@@ -2811,9 +3115,15 @@ const Weigh = {
   },
   save(sync) {
     const v = +$('#wv').value; const d = $('#wd').value || todayStr(); if (!v) { toast('Enter a weight'); return; }
-    const kg = toKg(v); const ex = S.weights.find(w => w.date === d);
+    const kg = toKg(v);
+    if (kg < 30 || kg > 300) { toast('That weight looks off. Check the number (' + unitW() + ').', 3500); return; }
+    if (d > todayStr()) { toast("That date is in the future."); return; }
+    const last = curWeightKg();
+    if (last && Math.abs(kg - last) / last > 0.06 && !confirm('That is ' + fmtW(Math.abs(kg - last), 1) + ' away from your last weigh-in. Save it anyway?')) return;
+    const ex = S.weights.find(w => w.date === d);
     if (ex) { ex.kg = kg; ex.source = 'manual'; } else S.weights.push({ date: d, kg, source: 'manual' });
     S.weights.sort((a, b) => a.date < b.date ? -1 : 1); save();
+    if (sync && d !== todayStr()) { toast('Saved here. Past dates are not sent to Health, because Health would record them as today.', 4500); go('#/progress'); return; }
     if (sync) Bridge.run('logWeight', fmtWn(kg, 1), { date: d }); else { toast('Saved'); go('#/progress'); }
   }
 };
@@ -2874,7 +3184,7 @@ const More = {
       <div class="card"><b>Your profile</b><div class="mute small">Goal, days, equipment, target weight.</div><div class="row mt"><button class="sm sec" onclick="go('#/profile')">Edit</button></div></div>
       <div class="card"><b>Heart rate</b>
         <div class="mute small">Zones now: easy ${zoneRange(2)[0]}–${zoneRange(2)[1]}, steady ${zoneRange(3)[0]}–${zoneRange(3)[1]}, hard ${zoneRange(4)[0]}–${zoneRange(4)[1]} bpm.</div>
-        <div class="inline mt"><div><label>Max heart rate</label><input type="number" inputmode="numeric" placeholder="${maxHR()} (estimated)" value="${S.profile.maxHR || ''}" onchange="S.profile.maxHR=+this.value||null;save();route()"></div><div><label>Resting</label><input type="number" inputmode="numeric" placeholder="${restHR()}" value="${S.profile.restHR || ''}" onchange="S.profile.restHR=+this.value||null;save();route()"></div></div>
+        <div class="inline mt"><div><label>Max heart rate</label><input type="number" inputmode="numeric" placeholder="${maxHR()} (estimated)" value="${S.profile.maxHR || ''}" onchange="More.setHR('maxHR',this.value)"></div><div><label>Resting</label><input type="number" inputmode="numeric" placeholder="${restHR()}" value="${S.profile.restHR || ''}" onchange="More.setHR('restHR',this.value)"></div></div>
         <div class="mute tiny">Leave blank to estimate max from your age and take resting from Health. A measured max from a hard effort is more accurate than any formula.</div>
         <div class="mt">${HR.supported() ? `<button class="sm ${HR.live ? 'ghost' : ''}" onclick="${HR.live ? 'HR.disconnect();route()' : 'HR.connect()'}">${HR.live ? 'Disconnect strap' : 'Connect a strap now'}</button>` : `<div class="small mute"><b>Live feed isn't available in Safari.</b> Apple doesn't allow web pages to reach Bluetooth, so the app asks for your pulse every 10 minutes during cardio instead. For a continuous feed, open this app in the <b>Bluefy</b> browser from the App Store and put your Garmin in Broadcast Heart Rate mode — the live bar appears automatically.</div>`}</div>
       </div>
@@ -2893,13 +3203,29 @@ const More = {
       <p class="mute tiny center">Tailored Workout · local-only · v1</p></div></div>`;
   },
   flag(k) { S.flags[k] = !S.flags[k]; save(); route(); },
+  setHR(k, v) {
+    const n = Math.round(+v) || null;
+    if (n != null) {
+      if (k === 'maxHR' && (n < 120 || n > 230)) { toast('Max heart rate is usually between 120 and 230.'); route(); return; }
+      if (k === 'restHR' && (n < 30 || n > 110)) { toast('Resting heart rate is usually between 30 and 110.'); route(); return; }
+      const mx = k === 'maxHR' ? n : maxHR(), rs = k === 'restHR' ? n : restHR();
+      if (mx - rs < 40) { toast('Resting needs to be well below max. Check both numbers.'); route(); return; }
+    }
+    S.profile[k] = n; save(); route();
+  },
   exportJson() {
-    const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' });
+    const name = 'tailored-backup-' + todayStr() + '.json', text = JSON.stringify(S, null, 1);
+    S.seen.lastBackup = todayStr(); save();
+    try {
+      const file = new File([text], name, { type: 'application/json' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Tailored Workout backup' }).catch(() => { }); return; }
+    } catch (e) { }
+    const blob = new Blob([text], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tailored-backup-' + todayStr() + '.json'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
   },
   importJson(inp) {
     const f = inp.files[0]; if (!f) return; const r = new FileReader();
-    r.onload = () => { try { const obj = JSON.parse(r.result); if (!obj.profile) throw 0; if (!confirm('Replace everything in the app with this backup?')) return; S = Object.assign(defaultState(), obj); S.active = null; S.pending = null; save(); toast('Imported'); route(); } catch (e) { toast('That file is not a Tailored backup.'); } };
+    r.onload = () => { try { const obj = JSON.parse(r.result); const s = normalizeState(obj); if (!s.profile) throw 0; if (!confirm('Replace everything in the app with this backup?')) return; S = s; S.active = null; S.pending = null; if (!S.program) buildProgram(); save(); toast('Imported'); route(); } catch (e) { toast('That file is not a Tailored backup.'); } inp.value = ''; };
     r.readAsText(f);
   },
   reset() { if (!confirm('Delete all data in this app? Apple Health is not affected.')) return; if (!confirm('Really? This cannot be undone.')) return; localStorage.removeItem(KEY); S = defaultState(); location.hash = '#/onboard'; route(); }
@@ -2908,6 +3234,7 @@ const ProfileEdit = {
   look(k, v) { S.profile.look = Object.assign({}, S.profile.look, { [k]: v }); save(); route(); },
   render() {
     const p = S.profile; const lb = p.units === 'lb';
+    if (ProfileEdit._snap == null) ProfileEdit._snap = ProfileEdit.snap();
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Profile</h2><span></span></div>
       <div class="card stack">
       <div><label>Goal</label><div class="chips">${[['general', 'General'], ['cardio', 'Cardio'], ['strength', 'Strength'], ['flex', 'Flexibility']].map(([k, l]) => `<span class="chip ${p.goal === k ? 'on' : ''}" onclick="S.profile.goal='${k}';save();route()">${l}</span>`).join('')}</div></div>
@@ -2927,15 +3254,27 @@ const ProfileEdit = {
         <div class="mute tiny mt">Hair</div><div class="swatches">${LOOKS.hair.map(c => `<button class="swatch ${figLook().hair === c ? 'on' : ''}" style="background:${c}" aria-label="Hair colour" onclick="ProfileEdit.look('hair','${c}')"></button>`).join('')}</div>
       </div>
       <div><label>Cardio level</label><div class="chips">${[['beg', 'Getting started'], ['int', 'Some base'], ['adv', 'Fit']].map(([k, l]) => `<span class="chip ${p.cardioLevel === k ? 'on' : ''}" onclick="S.profile.cardioLevel='${k}';save();route()">${l}</span>`).join('')}</div></div>
-      <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="S.profile.targetKg=toKg(+this.value);save()"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="S.profile.age=+this.value;save()"></div></div>
+      <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="ProfileEdit.setNum('targetKg',this.value)"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="ProfileEdit.setNum('age',this.value)"></div></div>
+      <div class="inline"><div><label>Height (${lb ? 'in' : 'cm'})</label><input type="number" inputmode="decimal" value="${p.heightCm ? (lb ? Math.round(p.heightCm / CM) : Math.round(p.heightCm)) : ''}" onchange="ProfileEdit.setNum('heightCm',this.value)"></div><div><label>Units</label><div class="chips">${[['lb', 'lb / in'], ['kg', 'kg / cm']].map(([k, l]) => `<span class="chip ${p.units === k ? 'on' : ''}" onclick="S.profile.units='${k}';save();route()">${l}</span>`).join('')}</div></div></div>
+      ${S.scBuilt.logWeight ? `<div class="mute tiny">If you change units, open your <b>Log weight</b> shortcut and change its unit to match.</div>` : ''}
       <div><label>Name</label><input value="${esc(p.name || '')}" onchange="S.profile.name=this.value;save()"></div>
       </div>
       <div class="stack mt2"><button onclick="ProfileEdit.apply()">Save and rebuild plan</button></div></div>`;
   },
-  togDay(i) { const d = S.profile.days; const j = d.indexOf(i); if (j > -1) d.splice(j, 1); else d.push(i); d.sort(); save(); route(); },
+  setNum(k, v) {
+    const p = S.profile, n = +v, lb = p.units !== 'kg';
+    if (k === 'age') { if (!(n >= 13 && n <= 100)) { toast('Age should be between 13 and 100.'); route(); return; } p.age = Math.round(n); }
+    if (k === 'targetKg') { const kg = toKg(n); if (!(kg >= 30 && kg <= 300)) { toast('That target looks off. Check the number.'); route(); return; } p.targetKg = kg; }
+    if (k === 'heightCm') { const cm = lb ? n * CM : n; if (!(cm >= 120 && cm <= 230)) { toast(lb ? 'Enter your height in inches — 5 ft 11 is 71.' : 'Enter your height in centimetres.', 3500); route(); return; } p.heightCm = cm; }
+    save(); route();
+  },
+  _snap: null,
+  snap() { const p = S.profile; return JSON.stringify([p.goal, p.days, p.minutes, p.setting, p.equipment, p.mtbDays, p.rideMinutes, p.cardioLevel]); },
+  changed() { return ProfileEdit._snap != null && ProfileEdit._snap !== ProfileEdit.snap(); },
+  togDay(i) { const d = S.profile.days; const j = d.indexOf(i); if (j > -1) { if (d.length === 1) { toast('Keep at least one day'); return; } d.splice(j, 1); if (S.profile.mtbDays) S.profile.mtbDays = S.profile.mtbDays.filter(x => x !== i); } else d.push(i); d.sort(); save(); route(); },
   togEq(k) { const e = S.profile.equipment; const j = e.indexOf(k); if (j > -1) { e.splice(j, 1); if (k === 'mtb') S.profile.mtbDays = []; } else e.push(k); save(); route(); },
   togMtb(i) { if (!S.profile.days.includes(i)) { toast('Make it a training day first'); return; } const d = S.profile.mtbDays = S.profile.mtbDays || []; const j = d.indexOf(i); if (j > -1) d.splice(j, 1); else d.push(i); save(); route(); },
-  apply() { if (!S.profile.days.length) { toast('Pick at least one day'); return; } S.swaps = {}; buildProgram(); toast('Plan rebuilt'); go('#/plan'); }
+  apply() { if (!S.profile.days.length) { toast('Pick at least one day'); return; } S.swaps = {}; buildProgram(); ProfileEdit._snap = ProfileEdit.snap(); toast('Plan rebuilt'); go('#/plan'); }
 };
 
 const Library = {
@@ -2945,16 +3284,26 @@ const Library = {
     const match = e => !q || e.n.toLowerCase().includes(q);
     const mine = new Set((S.program ? S.program.week : []).flatMap(w => (w.exercises || []).map(e => e.exId)));
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Exercises</h2><span></span></div>
-      <input placeholder="Search" value="${esc(Library._q || '')}" oninput="Library._q=this.value;route()">
+      <input type="search" placeholder="Search" aria-label="Search exercises" value="${esc(Library._q || '')}" oninput="Library.filter(this.value)">
       <p class="mute small mt">Every movement, animated. Tap one for the form cue.</p>
-      ${groups.map(([pat, label]) => {
+      <div id="libList">${Library.list()}</div></div>`;
+  },
+  filter(v) { Library._q = v; const el = $('#libList'); if (!el) return; el.innerHTML = Library.list(); a11y(el); Figure.mountAll(); },
+  list() {
+    const q = (Library._q || '').toLowerCase();
+    const groups = [['squat', 'Squat'], ['hinge', 'Hinge'], ['glute', 'Glutes'], ['lunge', 'Lunge'], ['pushH', 'Push — horizontal'], ['pushV', 'Push — overhead'], ['pullH', 'Pull — horizontal'], ['pullV', 'Pull — vertical'], ['biceps', 'Biceps'], ['triceps', 'Triceps'], ['shoulderAcc', 'Shoulders'], ['rearDelt', 'Upper back'], ['core', 'Core'], ['carry', 'Carries']];
+    const match = e => !q || e.n.toLowerCase().includes(q);
+    const mine = new Set((S.program ? S.program.week : []).flatMap(w => (w.exercises || []).map(e => e.exId)));
+    const any = EX.some(match) || MOB.some(m => m.n.toLowerCase().includes(q)) || CARDIO.some(c => c.n.toLowerCase().includes(q));
+    if (!any) return '<p class="mute mt2">Nothing matches that. Try another word.</p>';
+    return h`${groups.map(([pat, label]) => {
         const list = EX.filter(e => e.pat === pat && match(e));
         if (!list.length) return '';
         return `<h3 class="mt2 mb">${label}</h3><div class="list">${list.map(e => `<div class="item" onclick="Library.show('${e.id}')"><div class="figthumb">${Figure.svg('ex', e.id)}</div><div class="grow"><div class="title">${esc(e.n)}${mine.has(e.id) ? ' <span class="tag acc">in your plan</span>' : ''}</div><div class="sub">${e.equip.map(k => (EQUIP.find(x => x[0] === k) || [0, k === 'bw' ? 'Bodyweight' : k])[1]).join(' · ')}</div></div></div>`).join('')}</div>`;
       }).join('')}
-      <h3 class="mt2 mb">Mobility</h3><div class="list">${MOB.filter(m => !q || m.n.toLowerCase().includes(q)).map(m => `<div class="item" onclick="Library.showMob('${m.id}')"><div class="figthumb">${Figure.svg('mob', m.id)}</div><div class="grow"><div class="title">${esc(m.n)}</div><div class="sub">${esc(m.cue)}</div></div></div>`).join('')}</div>
-      <h3 class="mt2 mb">Cardio</h3><div class="list">${CARDIO.filter(c => !q || c.n.toLowerCase().includes(q)).map(c => `<div class="item"><div class="figthumb">${Figure.svg('cardio', c.id)}</div><div class="grow"><div class="title">${esc(c.n)}</div></div></div>`).join('')}</div>
-      <div style="height:20px"></div></div>`;
+      ${MOB.some(m => !q || m.n.toLowerCase().includes(q)) ? '<h3 class="mt2 mb">Mobility</h3>' : ''}<div class="list">${MOB.filter(m => !q || m.n.toLowerCase().includes(q)).map(m => `<div class="item" onclick="Library.showMob('${m.id}')"><div class="figthumb">${Figure.svg('mob', m.id)}</div><div class="grow"><div class="title">${esc(m.n)}</div><div class="sub">${esc(m.cue)}</div></div></div>`).join('')}</div>
+      ${CARDIO.some(c => !q || c.n.toLowerCase().includes(q)) ? '<h3 class="mt2 mb">Cardio</h3>' : ''}<div class="list">${CARDIO.filter(c => !q || c.n.toLowerCase().includes(q)).map(c => `<div class="item"><div class="figthumb">${Figure.svg('cardio', c.id)}</div><div class="grow"><div class="title">${esc(c.n)}</div></div></div>`).join('')}</div>
+      <div style="height:20px"></div>`;
   },
   show(id) { const e = EXMAP[id]; sheet(`<h3>${esc(e.n)}</h3><div class="figbox mt">${Figure.svg('ex', id)}</div><p class="mt">${esc(e.cue)}</p><p class="mute small">Loads: ${e.reg.length ? e.reg.map(r => (REGIONS.find(x => x[0] === r) || [0, r])[1]).join(', ') : 'low joint stress'}</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
   showMob(id) { const m = MOBMAP[id]; sheet(`<h3>${esc(m.n)}</h3><div class="figbox mt">${Figure.svg('mob', id)}</div><p class="mt">${esc(m.cue)}</p><button class="ghost" onclick="closeSheet()">Close</button>`); }
@@ -3062,10 +3411,11 @@ const Setup = {
   },
   toggle(k) { S.scBuilt[k] = !S.scBuilt[k]; save(); route(); },
   test(k) { if (!S.shortcuts[k]) { toast('Set a name first'); return; } Bridge.run(k, k === 'logStrength' || k === 'logCardio' ? '20,120' : k === 'logWeight' ? fmtWn(curWeightKg() || 75, 1) : null, { test: true }); },
-  howShare() { sheet(`<h3>Getting the iCloud link</h3><ol class="ol small"><li>Open the <b>Shortcuts</b> app</li><li>Tap the <b>…</b> on the shortcut to open it</li><li>Tap the <b>share</b> icon</li><li>Tap <b>Copy iCloud Link</b>, then <b>Copy Link</b></li><li>Come back here and paste it in</li></ol><p class="mute small">If you don't see a Share button: Settings → Shortcuts → turn on <b>Allow Untrusted Shortcuts</b>. You may need to run any shortcut once before that option appears.</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
+  howShare() { sheet(`<h3>Getting the iCloud link</h3><ol class="ol small"><li>Open the <b>Shortcuts</b> app</li><li>Tap the <b>…</b> on the shortcut to open it</li><li>Tap the <b>share</b> icon</li><li>Tap <b>Copy iCloud Link</b>, then <b>Copy Link</b></li><li>Come back here and paste it in</li></ol><p class="mute small">iCloud links install on any iPhone without changing settings. To send a shortcut straight to a friend in your contacts instead, both of you need Settings → Shortcuts → <b>Private Sharing</b> turned on.</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
   invite() {
     const payload = { n: {}, l: {} };
-    SC_ORDER.forEach(k => { if (S.scLinks[k]) { payload.n[k] = S.shortcuts[k]; payload.l[k] = S.scLinks[k]; } });
+    SC_ORDER.forEach(k => { if (S.scLinks[k] && SAFE_LINK.test(S.scLinks[k])) { payload.n[k] = S.shortcuts[k]; payload.l[k] = S.scLinks[k]; } });
+    if (!Object.keys(payload.l).length) { toast("Those don't look like iCloud shortcut links. Use Share → Copy iCloud Link in Shortcuts.", 4500); return; }
     payload.by = (S.profile && S.profile.name) || '';
     const url = BASE + '#/invite/' + b64e(JSON.stringify(payload));
     sheet(`<h3>Invite link</h3><p class="mute small">Send this to a friend. It opens the app on their phone and offers one-tap install for each shortcut you linked.</p>
@@ -3075,21 +3425,32 @@ const Setup = {
   }
 };
 
+const SAFE_LINK = /^https:\/\/(www\.)?icloud\.com\/shortcuts\/[A-Za-z0-9]+\/?$/;
+function cleanInvite(p) {
+  if (!p || typeof p !== 'object') return null;
+  const out = { n: {}, l: {}, by: String(p.by || '').replace(/[\u0000-\u001f]/g, '').slice(0, 40) };
+  SC_ORDER.forEach(k => {
+    const link = p.l && typeof p.l[k] === 'string' ? p.l[k].trim() : '', name = p.n && typeof p.n[k] === 'string' ? p.n[k].replace(/[\u0000-\u001f]/g, '').trim().slice(0, 60) : '';
+    if (SAFE_LINK.test(link) && name) { out.l[k] = link; out.n[k] = name; }
+  });
+  return out;
+}
 const Invite = {
   render(data) {
     let p = null;
-    try { p = JSON.parse(b64d(data || '')); } catch (e) { }
+    try { p = cleanInvite(JSON.parse(b64d(data || ''))); } catch (e) { }
+    Invite._p = p;
     if (!p || !p.l || !Object.keys(p.l).length) return `<div class="fade"><h2>Invite link didn't work</h2><p class="mute">That link looks incomplete. Ask for a fresh one.</p><button onclick="go('#/today')">Continue to the app</button></div>`;
     const keys = SC_ORDER.filter(k => p.l[k]);
     return h`<div class="fade"><div class="card hero glow artRight" style="min-height:190px"><div class="heroArt">${Art.rocket(false)}</div><div class="heroBody"><div class="eyebrow">${p.by ? esc(p.by) + ' shared these with you' : 'Shared with you'}</div><h1>Connect<br>Apple Health</h1></div></div>
       <p class="mute small mt">Tap each one, then tap <b>Get Shortcut</b> on the page that opens. They let this app read and write your Health data. Nothing leaves your phone.</p>
       <div class="stack mt">${keys.map((k, i) => `<div class="item"><div class="tag acc">${i + 1}</div><div class="grow"><div class="title">${esc(SC_STEPS[k].title)}</div><div class="sub">${esc(p.n[k])}</div></div><a href="${esc(p.l[k])}" target="_blank" rel="noopener"><button class="sm">Install</button></a></div>`).join('')}</div>
-      <div class="card mt2"><b>If a link says it can't be added</b><div class="mute small">Settings → Shortcuts → turn on <b>Allow Untrusted Shortcuts</b>. You may need to run any shortcut once before that switch appears.</div></div>
-      <div class="stack mt2"><button onclick="Invite.accept('${esc(data)}')">Done — set up my plan</button></div>
+      <div class="card mt2"><b>If a link won't open</b><div class="mute small">Make sure the Shortcuts app is installed and you're signed in to iCloud. iCloud links install without any extra settings.</div></div>
+      <div class="stack mt2"><button onclick="Invite.accept()">Done — set up my plan</button></div>
       <p class="mute tiny mt">Your workouts, weight and plan stay on this phone only.</p></div>`;
   },
-  accept(data) {
-    try { const p = JSON.parse(b64d(data)); Object.keys(p.n || {}).forEach(k => { S.shortcuts[k] = p.n[k]; S.scLinks[k] = p.l[k]; S.scBuilt[k] = true; }); save(); } catch (e) { }
+  accept() {
+    const p = Invite._p; if (p) { Object.keys(p.l).forEach(k => { S.shortcuts[k] = p.n[k]; S.scLinks[k] = p.l[k]; S.scBuilt[k] = true; }); save(); }
     go(S.profile ? '#/today' : '#/onboard');
   }
 };
@@ -3102,12 +3463,17 @@ window.addEventListener('hashchange', route);
   const r = Bridge.receive();
   if (r && r.slot) { if (r.slot === 'logWeight' || r.slot === 'readWeight') location.hash = '#/progress'; else if (r.slot === 'readiness') location.hash = '#/today'; }
   if (S.active && S.active.stage && S.active.stage !== 'done' && !location.hash.startsWith('#/session')) {
-    // resume an interrupted session
-    if (Date.now() - S.active.startedAt < 3 * 3600000) location.hash = '#/session'; else S.active = null;
+    // resume an interrupted session; older ones wait on Today with Resume / Save / Discard
+    const riding = S.active.ridePart === 'ride' && Date.now() - S.active.startedAt < 8 * 3600000;
+    if (Date.now() - S.active.startedAt < 3 * 3600000 || riding) location.hash = '#/session';
   }
+  if (load.failed) setTimeout(() => toast("Saved data couldn't be read, so the app started fresh. A copy was kept — import a backup to restore.", 7000), 600);
   if (!location.hash) location.hash = S.profile ? '#/today' : '#/onboard';
   route();
   if (S.profile && S.program && S.program.week.some(w => w.day == null)) buildProgram();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && route._day && route._day !== todayStr() && !location.hash.startsWith('#/session')) route(); });
+  window.addEventListener('storage', e => { if (e.key === KEY && !S.active) { S = load(); route(); } });
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
 })();
 </script>
 </body>
