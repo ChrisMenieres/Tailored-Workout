@@ -232,6 +232,11 @@ body.calm .cue{transition:none}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 .nextline{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 2px -4px;font-size:14px;color:var(--mute)}
 .nextline button{width:auto;flex:none}
+
+.swatches{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.swatch{width:34px;height:34px;min-height:0;padding:0;border-radius:50%;border:2px solid rgba(255,255,255,.15);flex:none}
+.swatch.on{border-color:var(--acc);box-shadow:0 0 0 3px rgba(52,208,182,.25)}
+.lookprev{width:120px;height:120px;flex:none;border-radius:18px;background:var(--bg2,#1b2033);overflow:hidden}.lookprev svg{width:100%;height:100%}
 </style>
 </head>
 <body data-goal="general">
@@ -1343,7 +1348,7 @@ function sceneSvg(n, s) {
 }
 
 /* ---------- render one frame ---------- */
-function figSvg(s, a) {
+function figSvgStick(s, a) {
   if (typeof a === 'string' || a == null) a = { prop: a };
   const L = (p, q, w, c, o) => `<line x1="${p[0].toFixed(1)}" y1="${p[1].toFixed(1)}" x2="${q[0].toFixed(1)}" y2="${q[1].toFixed(1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="round" ${o ? 'opacity="' + o + '"' : ''}/>`;
   const front = a.view === 'front';
@@ -1415,6 +1420,14 @@ const Figure = {
       Figure._items.forEach(it => { const p = it.a.frames[it.a.frames.length - 1]; it.n.innerHTML = figSvg(place(p), it.a); });
       return;
     }
+    // draw a still frame for everything now; only animate what is on screen
+    Figure._items.forEach(it => { it.vis = true; it.n.innerHTML = figSvg(place(it.a.frames[0]), it.a); });
+    if (Figure._io) Figure._io.disconnect();
+    if ('IntersectionObserver' in window) {
+      Figure._items.forEach(it => { it.vis = false; });
+      Figure._io = new IntersectionObserver(es => es.forEach(e => { const it = Figure._items.find(x => x.n === e.target); if (it) it.vis = e.isIntersecting; }), { rootMargin: '80px' });
+      Figure._items.forEach(it => Figure._io.observe(it.n));
+    }
     let last = performance.now(), acc = 0;
     const FRAME = 42; // ~24fps is plenty for a cartoon and far cheaper on a phone
     const step = (now) => {
@@ -1425,6 +1438,7 @@ const Figure = {
       Figure._items.forEach(it => {
         const f = it.a.frames, speed = it.a.speed || 1500;
         it.t += dt;
+        if (!it.vis) return;
         let u;
         if (f.length > 2) { const seg = (it.t / speed) % f.length; const i = Math.floor(seg); const k = it.a.linear ? seg - i : ease(seg - i); u = mixPose(f[i], f[(i + 1) % f.length], k); }
         else { const cyc = (it.t % (speed * 2)) / speed; const k = cyc < 1 ? ease(cyc) : ease(2 - cyc); u = mixPose(f[0], f[1], k); }
@@ -1433,7 +1447,7 @@ const Figure = {
     };
     Figure._raf = requestAnimationFrame(step);
   },
-  stop() { if (Figure._raf) cancelAnimationFrame(Figure._raf); Figure._raf = null; Figure._items = []; }
+  stop() { if (Figure._raf) cancelAnimationFrame(Figure._raf); Figure._raf = null; if (Figure._io) Figure._io.disconnect(); Figure._items = []; }
 };
 /* =========================================================
    POSE CORRECTIONS
@@ -1574,7 +1588,7 @@ const ANIM_FIX = {
   plank: { prop: 'none', hold: true, frames: [
     W({ px: 99, py: 154.5, tor: -9.4, H: [160, 174], H2: [157, 174], F: [36, 165], F2: [33, 166], ft: 60, ft2: 60 }),
     W({ px: 99, py: 153.5, tor: -10, H: [160, 174], H2: [157, 174], F: [36, 165], F2: [33, 166], ft: 60, ft2: 60 })] },
-  sideplank: { view: 'front', prop: 'none', hold: true, frames: [
+  sideplank: { view: 'front', spread: 2, prop: 'none', hold: true, frames: [
     W({ px: 98.5, py: 146, tor: -24, H: [138, 175], ua2: -90, fa2: -90, F: [40, 172], F2: [43, 170], ft: 10, ft2: 10 }),
     W({ px: 98.5, py: 143, tor: -26, H: [138, 175], ua2: -90, fa2: -90, F: [40, 172], F2: [43, 170], ft: 10, ft2: 10 })] },
   deadbug: { prop: 'none', frames: [
@@ -1668,6 +1682,171 @@ Object.values(ANIM).forEach(a => a.frames.forEach(f => {
   const q = resolveIK(f);
   ['ua', 'fa', 'ua2', 'fa2', 'th', 'sh', 'th2', 'sh2'].forEach(k => { f[k] = q[k]; });
 }));
+/* =========================================================
+   ANIME FIGURE
+   Same skeleton and poses as before; only the drawing changes.
+   Original design: sporty tee in the app colour, shorts or
+   leggings, trainers, big-eyed face, hair by body type.
+   ========================================================= */
+const LOOKS = {
+  skin: ['#fbe1cf', '#f0c4a0', '#d49a70', '#a86b46', '#6b432b'],
+  hair: ['#262033', '#5a3924', '#a4703c', '#e2c47c', '#b5412e', '#8d93aa']
+};
+function figLook() {
+  const p = (typeof S !== 'undefined' && S.profile) || {}, L = p.look || {};
+  const body = L.body || (p.gender === 'female' ? 'f' : p.gender === 'male' ? 'm' : 'n');
+  return { body, skin: L.skin || LOOKS.skin[1], hair: L.hair || (body === 'f' ? LOOKS.hair[1] : LOOKS.hair[0]), style: L.style || 'anime' };
+}
+function figSvg(s, a) { return figLook().style === 'simple' ? figSvgStick(s, a) : figSvgAnime(s, a); }
+
+/* ---------- small geometry helpers ---------- */
+const _d = a => [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
+const _f = p => p[0].toFixed(1) + ' ' + p[1].toFixed(1);
+const _lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+function _seg(p, q, w, c) { return `<line x1="${p[0].toFixed(1)}" y1="${p[1].toFixed(1)}" x2="${q[0].toFixed(1)}" y2="${q[1].toFixed(1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="round"/>`; }
+function _dot(p, r, c) { return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${r}" fill="${c}"/>`; }
+function _smooth(pts) {
+  const n = pts.length, m = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  let d = 'M' + _f(m(pts[n - 1], pts[0]));
+  for (let i = 0; i < n; i++) d += ' Q' + _f(pts[i]) + ' ' + _f(m(pts[i], pts[(i + 1) % n]));
+  return d + 'Z';
+}
+const _poly = pts => 'M' + pts.map(_f).join(' L') + 'Z';
+
+/* ---------- torso outline: widths along the spine (t=0 hip, t=1 shoulder) ---------- */
+const TORSO = {
+  m: { back: [[-0.12, 5.4], [0.2, 6.4], [0.55, 5.2], [0.9, 6.4], [1.07, 3.8]], front: [[-0.12, 5.4], [0.25, 6.2], [0.55, 6.1], [0.84, 7.8], [1.07, 3.8]] },
+  f: { back: [[-0.12, 5.8], [0.18, 7.4], [0.55, 4.8], [0.9, 5.6], [1.07, 3.4]], front: [[-0.12, 5.6], [0.22, 6], [0.46, 5], [0.64, 6.2], [0.78, 8.4], [0.92, 6], [1.07, 3.4]] },
+  n: { back: [[-0.12, 5.5], [0.2, 6.8], [0.55, 5], [0.9, 6], [1.07, 3.6]], front: [[-0.12, 5.5], [0.25, 6], [0.55, 5.6], [0.84, 7], [1.07, 3.6]] },
+  // front view: half-widths
+  mF: [[-0.12, 7.6], [0.2, 8.2], [0.5, 7.2], [0.86, 10.4], [1.07, 9.4]],
+  fF: [[-0.12, 8.6], [0.2, 9.2], [0.5, 6.4], [0.8, 8.4], [1.07, 8]],
+  nF: [[-0.12, 8], [0.2, 8.6], [0.5, 7], [0.86, 9.2], [1.07, 8.6]]
+};
+function _w(prof, t) {
+  if (t <= prof[0][0]) return prof[0][1];
+  for (let i = 1; i < prof.length; i++) if (t <= prof[i][0]) { const [t0, w0] = prof[i - 1], [t1, w1] = prof[i]; return w0 + (w1 - w0) * (t - t0) / (t1 - t0); }
+  return prof[prof.length - 1][1];
+}
+function torsoPts(s, L, front, t0, t1) {
+  const u = [(s.sho[0] - s.pel[0]) / LEN.torso, (s.sho[1] - s.pel[1]) / LEN.torso], n = [-u[1], u[0]];
+  const at = (t, off) => [s.pel[0] + u[0] * LEN.torso * t + n[0] * off, s.pel[1] + u[1] * LEN.torso * t + n[1] * off];
+  const back = front ? TORSO[L.body + 'F'] : TORSO[L.body].back, fr = front ? TORSO[L.body + 'F'] : TORSO[L.body].front;
+  const steps = []; for (let t = t0; t <= t1 + 1e-6; t += (t1 - t0) / 7) steps.push(t);
+  return steps.map(t => at(t, -_w(back, t))).concat(steps.slice().reverse().map(t => at(t, _w(fr, t))));
+}
+
+/* ---------- limbs ---------- */
+function legSvg(pel, kne, ank, toe, ft, C, L) {
+  let o = '';
+  if (L.body === 'f') o += _seg(kne, ank, 7.8, C.bottom) + _seg(pel, kne, 10.6, C.bottom);                    // leggings
+  else if (L.body === 'n') { o += _seg(_lerp(kne, ank, .5), ank, 7.2, C.skin) + _seg(kne, _lerp(kne, ank, .56), 8.6, C.bottom) + _seg(pel, kne, 11, C.bottom); } // 3/4 joggers
+  else { const k2 = _lerp(pel, kne, .8); o += _seg(k2, kne, 8.4, C.skin) + _seg(kne, ank, 7.8, C.skin) + _seg(pel, k2, 11.6, C.bottom); } // shorts
+  const heel = pol(ank, ft + 180, 2.4), tip = pol(toe, ft, 1);
+  return o + _seg(heel, tip, 6.6, C.shoe) + _seg(pol(heel, ft + 90, 2.5), pol(tip, ft + 90, 2.3), 1.8, C.sole);
+}
+function armSvg(sho, elb, han, C) {
+  const e1 = _lerp(sho, elb, .55);
+  return _seg(e1, elb, 6.2, C.skin) + _seg(elb, han, 5.8, C.skin) + _seg(sho, e1, 8.2, C.shirt) + _dot(han, 3.4, C.skin);
+}
+
+/* ---------- head ---------- */
+const HAIR = {
+  m: { out: [[18, 10.2], [30, 13.2], [40, 11.4], [52, 15.6], [66, 12.8], [80, 17.2], [96, 13.4], [112, 17.6], [128, 13.6], [146, 16.6], [164, 13.4], [184, 15], [204, 13], [226, 13.4], [242, 11.8]],
+       inn: [[238, 6], [205, 3], [160, 2.5], [115, 6.5], [80, 9], [50, 9], [32, 8.4], [24, 9]] },
+  f: { out: [[16, 10.6], [28, 13], [44, 14.2], [64, 14.8], [90, 15], [116, 14.8], [142, 14.4], [168, 13.8], [196, 13.2], [222, 12.6], [246, 11.6], [262, 10]],
+       inn: [[252, 7], [215, 3], [165, 2.5], [115, 6.5], [72, 9.4], [44, 9.2], [30, 8.6], [22, 9.2]] },
+  n: { out: [[16, 10.4], [28, 13.2], [42, 12.2], [56, 15], [74, 13.6], [92, 15.8], [112, 14.4], [132, 16], [152, 14.8], [172, 15.6], [194, 14.6], [214, 15.2], [236, 13.8], [256, 12.6], [268, 10.6]],
+       inn: [[260, 7.5], [215, 3], [160, 2.5], [110, 6.5], [66, 9.2], [36, 8.6], [24, 9]] }
+};
+function headSvg(s, L, front) {
+  const p = s._p || {}, U = p.nek != null ? p.nek : p.tor;
+  const H = s.hed, R = 12, ay = _d(U), ax = _d(U + 90);
+  const P = (x, y) => [H[0] + ax[0] * x + ay[0] * y, H[1] + ax[1] * x + ay[1] * y];
+  const PP = (phi, r) => P(r * Math.cos(phi * Math.PI / 180), r * Math.sin(phi * Math.PI / 180));
+  const skin = L.skin, hair = L.hair, ink = '#2a2340', rot = (U + 90).toFixed(1);
+  const eye = (x, y, big) => { const c = P(x, y), hl = P(x + .7, y + 1.3);
+    return `<ellipse cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" rx="${big ? 2.3 : 2.2}" ry="${big ? 3.4 : 3.2}" fill="${ink}" transform="rotate(${rot} ${c[0].toFixed(1)} ${c[1].toFixed(1)})"/>` + _dot(hl, .95, '#fff'); };
+  const lid = (x0, y0, x1, y1, w) => _seg(P(x0, y0), P(x1, y1), w, ink);
+  let o = '';
+  if (!front) {
+    // ponytail hangs from the back and falls with gravity; it lies on the floor when lying down
+    if (L.body === 'f') {
+      const A = PP(152, 12.4), dirB = _d(U - 115);   // local 'back and a little down', in world terms
+      let v = [dirB[0] * .55, dirB[1] * .55 + .8]; const m = Math.hypot(v[0], v[1]); v = [v[0] / m, v[1] / m]; const pr = [-v[1], v[0]];
+      const at = (d, w) => { const q = [A[0] + v[0] * d + pr[0] * w, A[1] + v[1] * d + pr[1] * w]; q[1] = Math.min(q[1], GROUND + 1); return q; };
+      o += `<path d="${_smooth([at(0, 3.4), at(9, 5.6), at(18, 3.6), at(25, 0), at(19, -2.6), at(9, -4.2), at(0, -3)])}" fill="${hair}"/>` + _dot(A, 2.4, 'var(--acc)');
+    }
+    o += _dot(H, R, skin);
+    o += `<path d="M${_f(P(11.4, -.6))} L${_f(P(13.3, -2.8))} L${_f(P(11.2, -3.4))}Z" fill="${skin}"/>`;   // little nose
+    const hp = HAIR[L.body];
+    const hairPts = hp.out.map(([a, r]) => PP(a, r)).concat(hp.inn.map(([a, r]) => PP(a, r)));
+    o += `<path d="${L.body === 'f' ? _smooth(hairPts) : _poly(hairPts)}" fill="${hair}" stroke="${hair}" stroke-width="1.2" stroke-linejoin="round"/>`;
+    { const E = P(1.2, -1.6); o += `<ellipse cx="${E[0].toFixed(1)}" cy="${E[1].toFixed(1)}" rx="2.2" ry="3" fill="${skin}" stroke="rgba(0,0,0,.2)" stroke-width=".9" transform="rotate(${rot} ${E[0].toFixed(1)} ${E[1].toFixed(1)})"/>`; }
+    if (L.body !== 'm') o += `<path d="${_smooth([P(1.6, 4), P(3.6, 2.4), P(3.2, L.body === 'f' ? -8 : -5), P(1.2, L.body === 'f' ? -10 : -7), P(-.6, -5), P(-.2, 3)])}" fill="${hair}"/>`; // lock by the ear
+    o += `<polyline points="${[80, 96, 112, 126].map(a => _f(PP(a, 11.2)).replace(' ', ',')).join(' ')}" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width="1.3" stroke-linecap="round"/>`; // shine
+    o += eye(6.3, -.9, L.body === 'f');
+    o += lid(4.1, 2.9, 8.6, 2.5, L.body === 'f' ? 1.7 : 1.3) + (L.body === 'f' ? lid(8.6, 2.5, 9.8, 3.6, 1.2) : '');
+    o += _seg(P(4.2, 5.7), P(8.6, 6.1), 1.3, hair);                                       // eyebrow over the fringe
+    o += `<ellipse cx="${P(7.6, -4.4)[0].toFixed(1)}" cy="${P(7.6, -4.4)[1].toFixed(1)}" rx="1.9" ry="1.2" fill="#ff8a8a" opacity=".32"/>`;
+    o += _seg(P(9.3, -6.3), P(10.9, -5.8), 1.1, '#8e4747');
+  } else {
+    o += _dot(H, R, skin);
+    const arc = (a0, a1, r, n) => Array.from({ length: n + 1 }, (_, i) => PP(a0 + (a1 - a0) * i / n, r));
+    let top, bangs, locks = '';
+    if (L.body === 'm') {
+      top = Array.from({ length: 15 }, (_, i) => PP(-15 + i * 15, i % 2 ? 16 : 13.2));
+      bangs = [[-10.8, 1.8], [-8, 5.4], [-5.5, 1.2], [-3, 5.5], [-.5, .6], [2.5, 5.2], [5, 1.2], [8, 5.4], [10.8, 1.8]].map(([x, y]) => P(x, y));
+      o += `<path d="${_poly(top.concat(bangs.reverse()))}" fill="${hair}" stroke="${hair}" stroke-width="1.2" stroke-linejoin="round"/>`;
+    } else {
+      const f = L.body === 'f', r = f ? 14.2 : 14.8;
+      top = arc(-24, 204, r, 12);
+      bangs = [[-10.4, 2], [-6.5, 4.8], [-3.2, 1.4], [0, 4.6], [3.2, 1.2], [6.8, 4.6], [10.4, 2.2]].map(([x, y]) => P(x, y));
+      const low = f ? -12 : -7.5;
+      locks = `<path d="${_smooth([P(10.2, 3), P(13.6, 1), P(13.2, low), P(10.6, low - 1.5), P(9, -2)])}" fill="${hair}"/><path d="${_smooth([P(-10.2, 3), P(-13.6, 1), P(-13.2, low), P(-10.6, low - 1.5), P(-9, -2)])}" fill="${hair}"/>`;
+      o += `<path d="${_smooth(top.concat(bangs.reverse()))}" fill="${hair}"/>` + locks;
+    }
+    o += eye(-4.7, -.9, L.body === 'f') + eye(4.7, -.9, L.body === 'f');
+    o += lid(-6.9, 2.6, -2.6, 2.8, L.body === 'f' ? 1.6 : 1.2) + lid(2.6, 2.8, 6.9, 2.6, L.body === 'f' ? 1.6 : 1.2);
+    o += _seg(P(-7, 5.6), P(-3, 6), 1.2, hair) + _seg(P(3, 6), P(7, 5.6), 1.2, hair);
+    o += [[-7.4, -4.6], [7.4, -4.6]].map(([x, y]) => `<ellipse cx="${P(x, y)[0].toFixed(1)}" cy="${P(x, y)[1].toFixed(1)}" rx="1.9" ry="1.1" fill="#ff8a8a" opacity=".32"/>`).join('');
+    o += `<path d="M${_f(P(-1.6, -6.2))} Q${_f(P(0, -7.4))} ${_f(P(1.6, -6.2))}" fill="none" stroke="#8e4747" stroke-width="1.1" stroke-linecap="round"/>`;
+  }
+  return o;
+}
+
+/* ---------- the whole figure ---------- */
+function figSvgAnime(s, a) {
+  if (typeof a === 'string' || a == null) a = { prop: a };
+  const L = figLook(), front = a.view === 'front';
+  const C = { shirt: 'var(--acc)', skin: L.skin, bottom: L.body === 'f' ? '#3b2f57' : '#2c3352', shoe: '#eef1f7', sole: 'var(--acc)' };
+  const p = s._p || {};
+  // front view: arms and legs hang from the edges of a wider body, not the spine
+  let sN = s.sho, sF = s.sho, pN = s.pel, pF = s.pel, sh = [0, 0], hp = [0, 0];
+  if (front) {
+    const side = _d(p.tor + 90), spread = a.spread != null ? a.spread : 8;
+    sh = [side[0] * spread, side[1] * spread]; hp = [side[0] * 4.4, side[1] * 4.4];
+  }
+  const mv = (q, d, k) => [q[0] + d[0] * k, q[1] + d[1] * k];
+  const armN = [mv(s.sho, sh, 1), mv(s.elb, sh, 1), mv(s.han, sh, 1)], armF = [mv(s.sho, sh, -1), mv(s.elb2, sh, -1), mv(s.han2, sh, -1)];
+  const legN = [mv(s.pel, hp, 1), mv(s.kne, hp, 1), mv(s.ank, hp, 1), mv(s.toe, hp, 1)], legF = [mv(s.pel, hp, -1), mv(s.kne2, hp, -1), mv(s.ank2, hp, -1), mv(s.toe2, hp, -1)];
+  const farLeg = c => legSvg(legF[0], legF[1], legF[2], legF[3], p.ft2 != null ? p.ft2 : 0, c, L);
+  const farArm = c => armSvg(armF[0], armF[1], armF[2], c);
+  const black = { shirt: '#000', skin: '#000', bottom: '#000', shoe: '#000', sole: '#000' };
+  const torso = torsoPts(s, L, front, -0.12, 1.07), band = torsoPts(s, L, front, -0.12, 0.24);
+  const U = p.nek != null ? p.nek : p.tor;
+  return `<line x1="-40" y1="${GROUND + 3}" x2="240" y2="${GROUND + 3}" stroke="var(--line)" stroke-width="2.5" stroke-linecap="round"/>
+    ${sceneSvg(a.scene, s)}
+    ${farLeg(C)}${farArm(C)}
+    ${front ? '' : `<g opacity=".34">${farLeg(black)}${farArm(black)}</g>`}
+    ${propSvg(a.prop, s)}
+    ${_seg(pol(s.sho, p.tor, 1), pol(s.sho, U, 11), 5.2, L.skin)}
+    <path d="${_smooth(torso)}" fill="${C.shirt}"/>
+    <path d="${_smooth(band)}" fill="${C.bottom}"/>
+    ${headSvg(s, L, front)}
+    ${legSvg(legN[0], legN[1], legN[2], legN[3], p.ft != null ? p.ft : 0, C, L)}
+    ${armSvg(armN[0], armN[1], armN[2], C)}`;
+}
 /* =========================================================
    HEART RATE — zones, live BLE feed, manual fallback
    ========================================================= */
@@ -1825,7 +2004,7 @@ const Onboard = {
       <p class="mute mt">A few questions, then a plan that fits your gear, your days, and how you actually feel each morning.</p>
       <div class="card mt"><b>Your data stays on this phone.</b><div class="mute small">No account, no server. Apple Health syncs happen through Shortcuts you control.</div></div>
       ${nav(true, "Let's go")}</div>`;
-    if (st === 'you') return h`<div class="fade">${prog}<h2>About you</h2><p class="mute">Used for calorie and protein estimates only.</p>
+    if (st === 'you') return h`<div class="fade">${prog}<h2>About you</h2><p class="mute">Used for calorie estimates and how your exercise figure looks.</p>
       <label class="mt">What should I call you?</label><input id="obName" value="${esc(d.name)}" placeholder="Optional" oninput="OB.d.name=this.value">
       <label class="mt">Gender</label><div class="chips">${[['male', 'Male'], ['female', 'Female'], ['other', 'Other / prefer not to say']].map(([k, l]) => `<span class="chip ${d.gender === k ? 'on' : ''}" onclick="OB.d.gender='${k}';route()">${l}</span>`).join('')}</div>
       <label class="mt">Age</label><input type="number" inputmode="numeric" value="${d.age}" oninput="OB.d.age=+this.value">
@@ -2726,6 +2905,7 @@ const More = {
   reset() { if (!confirm('Delete all data in this app? Apple Health is not affected.')) return; if (!confirm('Really? This cannot be undone.')) return; localStorage.removeItem(KEY); S = defaultState(); location.hash = '#/onboard'; route(); }
 };
 const ProfileEdit = {
+  look(k, v) { S.profile.look = Object.assign({}, S.profile.look, { [k]: v }); save(); route(); },
   render() {
     const p = S.profile; const lb = p.units === 'lb';
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Profile</h2><span></span></div>
@@ -2737,6 +2917,15 @@ const ProfileEdit = {
       ${p.setting === 'home_none' ? `<div class="card" style="background:var(--bg2)"><b>Bodyweight only</b><div class="mute small">No equipment is used with this option. To add a dumbbell, band or bike, pick Home + gear.</div></div>` : `<div><label>Equipment</label><div class="chips">${EQUIP.map(([k, l]) => `<span class="chip ${p.equipment.includes(k) ? 'on' : ''}" onclick="ProfileEdit.togEq('${k}')">${l}</span>`).join('')}</div></div>`}
       ${p.setting !== 'home_none' && S.profile.equipment.includes('mtb') ? `<div><label>Usual ride days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${(p.mtbDays || []).includes(i) ? 'on' : ''}" onclick="ProfileEdit.togMtb(${i})" ${p.days.includes(i) ? '' : 'style="opacity:.4"'}>${n}</button>`).join('')}</div><div class="mute tiny mt">A ride day is the ride plus stretching. You can switch any day to a ride on the day itself.</div></div>
       <div><label>Typical ride length</label><div class="chips">${[45, 60, 90, 120, 180].map(m => `<span class="chip ${p.rideMinutes === m ? 'on' : ''}" onclick="S.profile.rideMinutes=${m};save();route()">${fmtMins(m)}</span>`).join('')}</div></div>` : ''}
+      <div><label>Your figure</label>
+        <div class="between" style="align-items:center;gap:12px"><div class="lookprev">${Figure.svg('ex', 'latraise')}</div>
+        <div class="grow stack" style="gap:8px">
+          <div class="chips">${[['m', 'Man'], ['f', 'Woman'], ['n', 'Neutral']].map(([k, l]) => `<span class="chip ${figLook().body === k ? 'on' : ''}" onclick="ProfileEdit.look('body','${k}')">${l}</span>`).join('')}</div>
+          <div class="chips">${[['anime', 'Anime'], ['simple', 'Simple']].map(([k, l]) => `<span class="chip ${figLook().style === k ? 'on' : ''}" onclick="ProfileEdit.look('style','${k}')">${l}</span>`).join('')}</div>
+        </div></div>
+        <div class="mute tiny mt">Skin</div><div class="swatches">${LOOKS.skin.map(c => `<button class="swatch ${figLook().skin === c ? 'on' : ''}" style="background:${c}" aria-label="Skin tone" onclick="ProfileEdit.look('skin','${c}')"></button>`).join('')}</div>
+        <div class="mute tiny mt">Hair</div><div class="swatches">${LOOKS.hair.map(c => `<button class="swatch ${figLook().hair === c ? 'on' : ''}" style="background:${c}" aria-label="Hair colour" onclick="ProfileEdit.look('hair','${c}')"></button>`).join('')}</div>
+      </div>
       <div><label>Cardio level</label><div class="chips">${[['beg', 'Getting started'], ['int', 'Some base'], ['adv', 'Fit']].map(([k, l]) => `<span class="chip ${p.cardioLevel === k ? 'on' : ''}" onclick="S.profile.cardioLevel='${k}';save();route()">${l}</span>`).join('')}</div></div>
       <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="S.profile.targetKg=toKg(+this.value);save()"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="S.profile.age=+this.value;save()"></div></div>
       <div><label>Name</label><input value="${esc(p.name || '')}" onchange="S.profile.name=this.value;save()"></div>
