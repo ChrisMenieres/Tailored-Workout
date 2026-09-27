@@ -2173,6 +2173,10 @@ function route() {
   document.body.dataset.goal = S.profile ? S.profile.goal : 'general';
   document.body.classList.toggle('calm', !!S.flags.calm);
   if (!S.profile && !hsh.startsWith('#/onboard') && !hsh.startsWith('#/invite')) { location.hash = '#/onboard'; return; }
+  // iPhone saves the exact page a Home Screen icon was added from. If that was the setup screen,
+  // every cold start would reopen setup. Once a profile exists, send it to Today instead.
+  // (OB.step > 0 means setup is being finished right now, so let its last screen show.)
+  if (S.profile && hsh.startsWith('#/onboard') && OB.step === 0) { history.replaceState(null, '', '#/today'); route(); return; }
   const pg = hsh.split('/')[1], A0 = S.active;
   const viewKey = hsh + '|' + (pg === 'onboard' ? OB.step : pg === 'session' && A0 ? A0.stage + (A0.ridePart || '') + (A0.calibQ ? A0.calibQ.length : '') : '');
   const samePage = route._hash === hsh, keepY = route._key === viewKey ? window.scrollY : 0;
@@ -3185,7 +3189,7 @@ const More = {
       <div class="stack">
       <div class="card"><b>Apple Health setup</b><div class="mute small">${SC_ORDER.filter(k => S.scBuilt[k]).length}/5 shortcuts built${SC_ORDER.filter(k => S.scLinks[k]).length ? ' · ' + SC_ORDER.filter(k => S.scLinks[k]).length + '/5 shareable' : ''}</div><div class="row mt"><button class="sm" onclick="go('#/setup')">Open guide</button></div></div>
       <div class="card"><b>Exercise library</b><div class="mute small">Animated form guide for every movement, plus mobility and cardio.</div><div class="row mt"><button class="sm sec" onclick="go('#/library')">Browse</button></div></div>
-      <div class="card"><b>Your profile</b><div class="mute small">Goal, days, equipment, target weight.</div><div class="row mt"><button class="sm sec" onclick="go('#/profile')">Edit</button></div></div>
+      <div class="card"><b>Your profile</b><div class="mute small">Name, age, gender, height, weight, goal and training days.</div><div class="row mt"><button class="sm sec" onclick="go('#/profile')">Edit</button></div></div>
       <div class="card"><b>Heart rate</b>
         <div class="mute small">Zones now: easy ${zoneRange(2)[0]}–${zoneRange(2)[1]}, steady ${zoneRange(3)[0]}–${zoneRange(3)[1]}, hard ${zoneRange(4)[0]}–${zoneRange(4)[1]} bpm.</div>
         <div class="inline mt"><div><label>Max heart rate</label><input type="number" inputmode="numeric" placeholder="${maxHR()} (estimated)" value="${S.profile.maxHR || ''}" onchange="More.setHR('maxHR',this.value)"></div><div><label>Resting</label><input type="number" inputmode="numeric" placeholder="${restHR()}" value="${S.profile.restHR || ''}" onchange="More.setHR('restHR',this.value)"></div></div>
@@ -3347,7 +3351,15 @@ const ProfileEdit = {
     const p = S.profile; const lb = p.units === 'lb';
     if (ProfileEdit._snap == null) ProfileEdit._snap = ProfileEdit.snap();
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Profile</h2><span></span></div>
-      <div class="card stack">
+      <div class="card stack"><b>About you</b>
+      <div><label>Name</label><input value="${esc(p.name || '')}" onchange="S.profile.name=this.value.trim();save()"></div>
+      <div><label>Gender</label><div class="chips">${[['male', 'Male'], ['female', 'Female'], ['other', 'Other / prefer not to say']].map(([k, l]) => `<span class="chip ${p.gender === k ? 'on' : ''}" onclick="S.profile.gender='${k}';save();route()">${l}</span>`).join('')}</div><div class="mute tiny mt">Used to estimate calories.</div></div>
+      <div class="between" style="align-items:center"><div><label>Current weight</label><div>${fmtW(S.weights.length ? S.weights[S.weights.length - 1].kg : p.weightKg)}</div></div><button class="sm sec" onclick="go('#/weigh')">Update</button></div>
+      <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="ProfileEdit.setNum('targetKg',this.value)"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="ProfileEdit.setNum('age',this.value)"></div></div>
+      <div class="inline"><div><label>Height (${lb ? 'in' : 'cm'})</label><input type="number" inputmode="decimal" value="${p.heightCm ? (lb ? Math.round(p.heightCm / CM) : Math.round(p.heightCm)) : ''}" onchange="ProfileEdit.setNum('heightCm',this.value)"></div><div><label>Units</label><div class="chips">${[['lb', 'lb / in'], ['kg', 'kg / cm']].map(([k, l]) => `<span class="chip ${p.units === k ? 'on' : ''}" onclick="S.profile.units='${k}';save();route()">${l}</span>`).join('')}</div></div></div>
+      ${S.scBuilt.logWeight ? `<div class="mute tiny">If you change units, open your <b>Log weight</b> shortcut and change its unit to match.</div>` : ''}
+      </div>
+      <div class="card stack mt2"><b>Your plan</b>
       <div><label>Goal</label><div class="chips">${[['general', 'General'], ['cardio', 'Cardio'], ['strength', 'Strength'], ['flex', 'Flexibility']].map(([k, l]) => `<span class="chip ${p.goal === k ? 'on' : ''}" onclick="S.profile.goal='${k}';save();route()">${l}</span>`).join('')}</div></div>
       <div><label>Days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${p.days.includes(i) ? 'on' : ''}" onclick="ProfileEdit.togDay(${i})">${n}</button>`).join('')}</div></div>
       <div><label>Minutes</label><div class="chips">${[20, 30, 45, 60, 75].map(m => `<span class="chip ${p.minutes === m ? 'on' : ''}" onclick="S.profile.minutes=${m};save();route()">${m}</span>`).join('')}</div></div>
@@ -3365,10 +3377,6 @@ const ProfileEdit = {
         <div class="mute tiny mt">Hair</div><div class="swatches">${LOOKS.hair.map(c => `<button class="swatch ${figLook().hair === c ? 'on' : ''}" style="background:${c}" aria-label="Hair colour" onclick="ProfileEdit.look('hair','${c}')"></button>`).join('')}</div>
       </div>
       <div><label>Cardio level</label><div class="chips">${[['beg', 'Getting started'], ['int', 'Some base'], ['adv', 'Fit']].map(([k, l]) => `<span class="chip ${p.cardioLevel === k ? 'on' : ''}" onclick="S.profile.cardioLevel='${k}';save();route()">${l}</span>`).join('')}</div></div>
-      <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="ProfileEdit.setNum('targetKg',this.value)"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="ProfileEdit.setNum('age',this.value)"></div></div>
-      <div class="inline"><div><label>Height (${lb ? 'in' : 'cm'})</label><input type="number" inputmode="decimal" value="${p.heightCm ? (lb ? Math.round(p.heightCm / CM) : Math.round(p.heightCm)) : ''}" onchange="ProfileEdit.setNum('heightCm',this.value)"></div><div><label>Units</label><div class="chips">${[['lb', 'lb / in'], ['kg', 'kg / cm']].map(([k, l]) => `<span class="chip ${p.units === k ? 'on' : ''}" onclick="S.profile.units='${k}';save();route()">${l}</span>`).join('')}</div></div></div>
-      ${S.scBuilt.logWeight ? `<div class="mute tiny">If you change units, open your <b>Log weight</b> shortcut and change its unit to match.</div>` : ''}
-      <div><label>Name</label><input value="${esc(p.name || '')}" onchange="S.profile.name=this.value;save()"></div>
       </div>
       <div class="stack mt2"><button onclick="ProfileEdit.apply()">Save and rebuild plan</button></div></div>`;
   },
