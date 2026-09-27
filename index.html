@@ -2173,10 +2173,8 @@ function route() {
   document.body.dataset.goal = S.profile ? S.profile.goal : 'general';
   document.body.classList.toggle('calm', !!S.flags.calm);
   if (!S.profile && !hsh.startsWith('#/onboard') && !hsh.startsWith('#/invite')) { location.hash = '#/onboard'; return; }
-  // iPhone saves the exact page a Home Screen icon was added from. If that was the setup screen,
-  // every cold start would reopen setup. Once a profile exists, send it to Today instead.
-  // (OB.step > 0 means setup is being finished right now, so let its last screen show.)
-  if (S.profile && hsh.startsWith('#/onboard') && OB.step === 0) { history.replaceState(null, '', '#/today'); route(); return; }
+  // already set up: never show the setup questions again, even if the app was saved to the home screen mid-setup
+  if (S.profile && hsh.startsWith('#/onboard') && Onboard.steps[OB.step] !== 'done') { OB.step = 0; location.replace('#/today'); return; }
   const pg = hsh.split('/')[1], A0 = S.active;
   const viewKey = hsh + '|' + (pg === 'onboard' ? OB.step : pg === 'session' && A0 ? A0.stage + (A0.ridePart || '') + (A0.calibQ ? A0.calibQ.length : '') : '');
   const samePage = route._hash === hsh, keepY = route._key === viewKey ? window.scrollY : 0;
@@ -2308,7 +2306,7 @@ const Onboard = {
     S.seen.onboardedAt = todayStr();
     buildProgram(); save();
   },
-  finish() { OB.step = 0; go('#/today'); }
+  finish() { OB.step = 0; location.replace('#/today'); }
 };
 
 /* =========================================================
@@ -3189,7 +3187,7 @@ const More = {
       <div class="stack">
       <div class="card"><b>Apple Health setup</b><div class="mute small">${SC_ORDER.filter(k => S.scBuilt[k]).length}/5 shortcuts built${SC_ORDER.filter(k => S.scLinks[k]).length ? ' · ' + SC_ORDER.filter(k => S.scLinks[k]).length + '/5 shareable' : ''}</div><div class="row mt"><button class="sm" onclick="go('#/setup')">Open guide</button></div></div>
       <div class="card"><b>Exercise library</b><div class="mute small">Animated form guide for every movement, plus mobility and cardio.</div><div class="row mt"><button class="sm sec" onclick="go('#/library')">Browse</button></div></div>
-      <div class="card"><b>Your profile</b><div class="mute small">Name, age, gender, height, weight, goal and training days.</div><div class="row mt"><button class="sm sec" onclick="go('#/profile')">Edit</button></div></div>
+      <div class="card"><b>Your profile</b><div class="mute small">Goal, days, equipment, target weight.</div><div class="row mt"><button class="sm sec" onclick="go('#/profile')">Edit</button></div></div>
       <div class="card"><b>Heart rate</b>
         <div class="mute small">Zones now: easy ${zoneRange(2)[0]}–${zoneRange(2)[1]}, steady ${zoneRange(3)[0]}–${zoneRange(3)[1]}, hard ${zoneRange(4)[0]}–${zoneRange(4)[1]} bpm.</div>
         <div class="inline mt"><div><label>Max heart rate</label><input type="number" inputmode="numeric" placeholder="${maxHR()} (estimated)" value="${S.profile.maxHR || ''}" onchange="More.setHR('maxHR',this.value)"></div><div><label>Resting</label><input type="number" inputmode="numeric" placeholder="${restHR()}" value="${S.profile.restHR || ''}" onchange="More.setHR('restHR',this.value)"></div></div>
@@ -3205,7 +3203,7 @@ const More = {
         <div class="mt"><label>Weight-change pace cap</label><div class="chips">${[['gentle', 'Gentle · 0.5%/wk'], ['standard', 'Standard · 0.75%/wk'], ['aggressive', 'Max · 1%/wk']].map(([k, l]) => `<span class="chip ${f.pace === k ? 'on' : ''}" onclick="S.flags.pace='${k}';save();route()">${l}</span>`).join('')}</div></div>
       </div>
       <div class="card"><b>Shortcut names</b><div class="mute tiny">Must match the Shortcuts app exactly.</div>${Object.entries(S.shortcuts).map(([k, v]) => `<label class="mt">${{ readWeight: 'Read weight', logStrength: 'Log strength workout', logCardio: 'Log cardio workout', readiness: 'Readiness', logWeight: 'Log weight' }[k]}</label><input value="${esc(v)}" oninput="S.shortcuts['${k}']=this.value;save()">`).join('')}</div>
-      <div class="card"><b>Backup</b><div class="mute small">Everything lives on this phone. Download a backup now and then, and keep the file in iCloud Drive.</div><div class="mute small mt2">Loading a backup adds any workouts you're missing. Workouts you already have are skipped. If a day is different, you'll be asked which one to keep.</div><div class="grid2 mt"><button class="sm sec" onclick="More.exportJson()">Download backup</button><button class="sm sec" onclick="$('#imp').click()">Load backup</button></div><input id="imp" type="file" accept="application/json,.json" class="hide" onchange="More.importJson(this)"></div>
+      <div class="card"><b>Backup</b><div class="mute small">Everything lives on this phone. Export now and then; keep the file in iCloud Drive.</div><div class="grid2 mt"><button class="sm sec" onclick="More.exportJson()">Export</button><button class="sm sec" onclick="$('#imp').click()">Import</button></div><input id="imp" type="file" accept="application/json,.json" class="hide" onchange="More.importJson(this)"></div>
       <div class="card"><b>Add to Home Screen</b><div class="mute small">Safari can clear this app's storage after 7 days unused. Installed from the home screen, it's exempt. Share ▲ → Add to Home Screen.</div></div>
       <div class="card"><button class="danger" onclick="More.reset()">Reset everything</button></div>
       <p class="mute tiny center">Tailored Workout · local-only · v1</p></div></div>`;
@@ -3233,117 +3231,10 @@ const More = {
   },
   importJson(inp, fresh) {
     const f = inp.files[0]; if (!f) return; const r = new FileReader();
-    r.onload = () => {
-      inp.value = '';
-      let s;
-      try { s = normalizeState(JSON.parse(r.result)); if (!s.profile) throw 0; } catch (e) { toast('That file is not a Tailored backup.'); return; }
-      // a brand-new app has nothing to merge with: restore everything
-      if (fresh || !S.profile) { S = s; S.active = null; S.pending = null; if (!S.program) buildProgram(); save(); toast('Welcome back — everything is restored', 3500); OB.step = 0; go('#/today'); return; }
-      Merge.start(s);
-    };
+    r.onload = () => { try { const obj = JSON.parse(r.result); const s = normalizeState(obj); if (!s.profile) throw 0; if (!fresh && !confirm('Replace everything in the app with this backup?')) return; S = s; S.active = null; S.pending = null; if (!S.program) buildProgram(); save(); toast(fresh ? 'Welcome back — everything is restored' : 'Imported', 3500); OB.step = 0; go('#/today'); } catch (e) { toast('That file is not a Tailored backup.'); } inp.value = ''; };
     r.readAsText(f);
   },
   reset() { if (!confirm('Delete all data in this app? Apple Health is not affected.')) return; if (!confirm('Really? This cannot be undone.')) return; localStorage.removeItem(KEY); S = defaultState(); location.hash = '#/onboard'; route(); }
-};
-/* =========================================================
-   BACKUP MERGE — add what's missing, skip exact copies, ask about differences
-   ========================================================= */
-const Merge = {
-  // same content = same JSON once keys are sorted. The id and Health-sync flag are bookkeeping, not workout data.
-  canon(v) {
-    if (Array.isArray(v)) return '[' + v.map(x => Merge.canon(x)).join(',') + ']';
-    if (v && typeof v === 'object') return '{' + Object.keys(v).filter(k => k !== 'id' && k !== 'synced' && v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + Merge.canon(v[k])).join(',') + '}';
-    return JSON.stringify(v === undefined ? null : v);
-  },
-  byDate(list) { const m = {}; list.forEach(x => { (m[x.date] = m[x.date] || []).push(x); }); return m; },
-  sameDay(a, b) { const ca = a.map(Merge.canon).sort(), cb = b.map(Merge.canon).sort(); return ca.length === cb.length && ca.every((x, i) => x === cb[i]); },
-  start(inc) {
-    const mine = Merge.byDate(S.sessions), theirs = Merge.byDate(inc.sessions);
-    let added = 0, same = 0; const conflicts = [];
-    Object.keys(theirs).sort().forEach(d => {
-      if (!mine[d]) { theirs[d].forEach(x => S.sessions.push(x)); added += theirs[d].length; }
-      else if (Merge.sameDay(mine[d], theirs[d])) same++;
-      else conflicts.push({ date: d, mine: mine[d], theirs: theirs[d] });
-    });
-    const other = Merge.others(inc);
-    Merge.sortSessions(); save();
-    Merge.job = { conflicts, i: 0, added, same, replaced: 0, kept: 0, other };
-    Merge.next();
-  },
-  // weigh-ins, readiness and saved loads: add what's missing, never overwrite what's here
-  others(inc) {
-    let n = 0;
-    const addBy = (key, list, keyFn) => { const have = new Set(S[key].map(keyFn)); list.forEach(x => { const k = keyFn(x); if (!have.has(k)) { S[key].push(x); have.add(k); n++; } }); };
-    addBy('weights', inc.weights, w => w.date + '|' + (w.source || ''));
-    addBy('readiness', inc.readiness, r => r.date);
-    addBy('intake', inc.intake || [], x => x.weekOf);
-    addBy('adjust', inc.adjust || [], Merge.canon);
-    S.weights.sort((a, b) => a.date < b.date ? -1 : 1); S.readiness.sort((a, b) => a.date < b.date ? -1 : 1);
-    ['calib', 'loads'].forEach(k => Object.keys(inc[k] || {}).forEach(id => { if (!S[k][id]) { S[k][id] = inc[k][id]; n++; } }));
-    return n;
-  },
-  sortSessions() { S.sessions = S.sessions.map((x, i) => [x, i]).sort((a, b) => a[0].date < b[0].date ? -1 : a[0].date > b[0].date ? 1 : a[1] - b[1]).map(x => x[0]); },
-  summary(list) {
-    return list.map(x => {
-      const bits = [esc(x.title || 'Workout'), (x.minutes || 0) + ' min'];
-      if (x.entries && x.entries.length) {
-        const sets = x.entries.reduce((n, e) => n + (e.sets || []).filter(q => q.done).length, 0);
-        bits.push(x.entries.length + ' exercise' + (x.entries.length > 1 ? 's' : ''), sets + ' set' + (sets === 1 ? '' : 's') + ' done');
-      }
-      if (x.calories) bits.push(Math.round(x.calories) + ' kcal');
-      return '<div class="small">' + bits.join(' · ') + '</div>';
-    }).join('');
-  },
-  next() {
-    const j = Merge.job; if (!j) return;
-    if (j.i >= j.conflicts.length) { Merge.finish(); return; }
-    const c = j.conflicts[j.i], left = j.conflicts.length - j.i;
-    const old = $('.sheetBg'); if (old) old.remove();
-    // built by hand, not with sheet(): tapping outside must not skip a decision
-    const bg = document.createElement('div'); bg.className = 'sheetBg';
-    bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mgT">
-      <div class="handle"></div>
-      <b id="mgT">${niceDate(c.date)} is different</b>
-      <div class="mute small mt2">The backup has a different workout for this day. Do you want to replace this day's workout with the one from the backup?</div>
-      ${left > 1 ? `<div class="mute tiny mt2">Day ${j.i + 1} of ${j.conflicts.length}</div>` : ''}
-      <div class="card mt"><div class="mute tiny">On this phone now</div>${Merge.summary(c.mine)}</div>
-      <div class="card mt2"><div class="mute tiny">In the backup</div>${Merge.summary(c.theirs)}</div>
-      ${left > 1 ? `<label class="row mt small" style="gap:10px;align-items:center"><input type="checkbox" id="mgAll" style="width:22px;height:22px;flex:none;padding:0;margin:0;-webkit-appearance:checkbox;appearance:auto;accent-color:var(--acc)"> Do the same for the other ${left - 1} day${left > 2 ? 's' : ''}</label>` : ''}
-      <div class="stack mt"><button onclick="Merge.pick(true)">Replace with backup</button><button class="sec" onclick="Merge.pick(false)">Keep what's on this phone</button></div>
-    </div>`;
-    document.body.appendChild(bg);
-  },
-  pick(replace) {
-    const j = Merge.job; if (!j) return;
-    const all = $('#mgAll') && $('#mgAll').checked;
-    const upto = all ? j.conflicts.length : j.i + 1;
-    for (; j.i < upto; j.i++) {
-      const c = j.conflicts[j.i];
-      if (replace) {
-        // if either copy already went to Apple Health, don't send it again
-        const wasSynced = c.mine.some(x => x.synced);
-        S.sessions = S.sessions.filter(x => x.date !== c.date);
-        c.theirs.forEach(x => S.sessions.push(wasSynced ? Object.assign({}, x, { synced: true }) : x));
-        j.replaced++;
-      } else j.kept++;
-    }
-    Merge.sortSessions(); save();
-    Merge.next();
-  },
-  finish() {
-    const j = Merge.job; Merge.job = null;
-    const old = $('.sheetBg'); if (old) old.remove();
-    const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
-    const lines = [];
-    if (j.added) lines.push(plural(j.added, 'workout') + ' added');
-    if (j.replaced) lines.push(plural(j.replaced, 'day') + ' replaced from the backup');
-    if (j.kept) lines.push(plural(j.kept, 'day') + (j.kept === 1 ? ' kept as it was' : ' kept as they were'));
-    if (j.same) lines.push(plural(j.same, 'day') + ' already matched, so skipped');
-    if (j.other) lines.push(plural(j.other, 'other record') + ' added (weigh-ins, readiness, weights used)');
-    if (!lines.length) lines.push('Nothing new. Everything in the backup is already here.');
-    sheet(`<b>Backup loaded</b><div class="stack mt">${lines.map(l => `<div class="small">${l}</div>`).join('')}</div><div class="stack mt"><button onclick="closeSheet();route()">Done</button></div>`);
-    route();
-  }
 };
 const ProfileEdit = {
   look(k, v) { S.profile.look = Object.assign({}, S.profile.look, { [k]: v }); save(); route(); },
@@ -3351,15 +3242,7 @@ const ProfileEdit = {
     const p = S.profile; const lb = p.units === 'lb';
     if (ProfileEdit._snap == null) ProfileEdit._snap = ProfileEdit.snap();
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Profile</h2><span></span></div>
-      <div class="card stack"><b>About you</b>
-      <div><label>Name</label><input value="${esc(p.name || '')}" onchange="S.profile.name=this.value.trim();save()"></div>
-      <div><label>Gender</label><div class="chips">${[['male', 'Male'], ['female', 'Female'], ['other', 'Other / prefer not to say']].map(([k, l]) => `<span class="chip ${p.gender === k ? 'on' : ''}" onclick="S.profile.gender='${k}';save();route()">${l}</span>`).join('')}</div><div class="mute tiny mt">Used to estimate calories.</div></div>
-      <div class="between" style="align-items:center"><div><label>Current weight</label><div>${fmtW(S.weights.length ? S.weights[S.weights.length - 1].kg : p.weightKg)}</div></div><button class="sm sec" onclick="go('#/weigh')">Update</button></div>
-      <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="ProfileEdit.setNum('targetKg',this.value)"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="ProfileEdit.setNum('age',this.value)"></div></div>
-      <div class="inline"><div><label>Height (${lb ? 'in' : 'cm'})</label><input type="number" inputmode="decimal" value="${p.heightCm ? (lb ? Math.round(p.heightCm / CM) : Math.round(p.heightCm)) : ''}" onchange="ProfileEdit.setNum('heightCm',this.value)"></div><div><label>Units</label><div class="chips">${[['lb', 'lb / in'], ['kg', 'kg / cm']].map(([k, l]) => `<span class="chip ${p.units === k ? 'on' : ''}" onclick="S.profile.units='${k}';save();route()">${l}</span>`).join('')}</div></div></div>
-      ${S.scBuilt.logWeight ? `<div class="mute tiny">If you change units, open your <b>Log weight</b> shortcut and change its unit to match.</div>` : ''}
-      </div>
-      <div class="card stack mt2"><b>Your plan</b>
+      <div class="card stack">
       <div><label>Goal</label><div class="chips">${[['general', 'General'], ['cardio', 'Cardio'], ['strength', 'Strength'], ['flex', 'Flexibility']].map(([k, l]) => `<span class="chip ${p.goal === k ? 'on' : ''}" onclick="S.profile.goal='${k}';save();route()">${l}</span>`).join('')}</div></div>
       <div><label>Days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${p.days.includes(i) ? 'on' : ''}" onclick="ProfileEdit.togDay(${i})">${n}</button>`).join('')}</div></div>
       <div><label>Minutes</label><div class="chips">${[20, 30, 45, 60, 75].map(m => `<span class="chip ${p.minutes === m ? 'on' : ''}" onclick="S.profile.minutes=${m};save();route()">${m}</span>`).join('')}</div></div>
@@ -3377,6 +3260,12 @@ const ProfileEdit = {
         <div class="mute tiny mt">Hair</div><div class="swatches">${LOOKS.hair.map(c => `<button class="swatch ${figLook().hair === c ? 'on' : ''}" style="background:${c}" aria-label="Hair colour" onclick="ProfileEdit.look('hair','${c}')"></button>`).join('')}</div>
       </div>
       <div><label>Cardio level</label><div class="chips">${[['beg', 'Getting started'], ['int', 'Some base'], ['adv', 'Fit']].map(([k, l]) => `<span class="chip ${p.cardioLevel === k ? 'on' : ''}" onclick="S.profile.cardioLevel='${k}';save();route()">${l}</span>`).join('')}</div></div>
+      <div class="inline"><div><label>Target weight (${lb ? 'lb' : 'kg'})</label><input type="number" inputmode="decimal" value="${fmtWn(p.targetKg, 1)}" onchange="ProfileEdit.setNum('targetKg',this.value)"></div><div><label>Age</label><input type="number" inputmode="numeric" value="${p.age}" onchange="ProfileEdit.setNum('age',this.value)"></div></div>
+      <div class="inline"><div><label>Height (${lb ? 'in' : 'cm'})</label><input type="number" inputmode="decimal" value="${p.heightCm ? (lb ? Math.round(p.heightCm / CM) : Math.round(p.heightCm)) : ''}" onchange="ProfileEdit.setNum('heightCm',this.value)"></div><div><label>Units</label><div class="chips">${[['lb', 'lb / in'], ['kg', 'kg / cm']].map(([k, l]) => `<span class="chip ${p.units === k ? 'on' : ''}" onclick="S.profile.units='${k}';save();route()">${l}</span>`).join('')}</div></div></div>
+      ${S.scBuilt.logWeight ? `<div class="mute tiny">If you change units, open your <b>Log weight</b> shortcut and change its unit to match.</div>` : ''}
+      <div><label>Name</label><input value="${esc(p.name || '')}" onchange="S.profile.name=this.value;save()"></div>
+      <div><label>Gender</label><div class="chips">${[['male', 'Male'], ['female', 'Female'], ['other', 'Other / prefer not to say']].map(([k, l]) => `<span class="chip ${p.gender === k ? 'on' : ''}" onclick="S.profile.gender='${k}';save();route()">${l}</span>`).join('')}</div><div class="mute tiny mt">Used for calorie estimates.</div></div>
+      <div class="mute tiny">Current weight changes with each weigh-in. Use <b>Weigh in</b> on the Today screen.</div>
       </div>
       <div class="stack mt2"><button onclick="ProfileEdit.apply()">Save and rebuild plan</button></div></div>`;
   },
@@ -3441,7 +3330,7 @@ const SC_STEPS = {
     'Below the repeat: Add Action → <b>Combine Text</b>, input <b>Repeat Results</b>, separator <b>New Lines</b>',
     'Add Action → <b>Stop and Output</b>, output the <b>Combined Text</b>. Tap Done.'
   ], note: 'The simple version from testing (one Find Health Samples, limit 1, then Text and Stop and Output) also works — the app just asks you for the date each time.' },
-  logStrength: { title: 'Log strength workout', why: 'Writes a finished session into Health.', mins: 4, steps: [
+  logStrength: { title: 'Log strength workout', why: 'Writes a finished session into Health.', mins: 5, steps: [
     'New shortcut → Rename → paste the name above',
     'Add Action → <b>Split Text</b>. Input: <b>Shortcut Input</b>. Separator: <b>Custom</b>, and type a single comma',
     'Add Action → <b>Get Item from List</b> → <b>First Item</b> from Split Text',
@@ -3449,7 +3338,8 @@ const SC_STEPS = {
     'Add Action → <b>Log Workout</b>. Type: <b>Traditional Strength Training</b>',
     'Duration: insert the <b>first item</b> variable, unit <b>minutes</b>',
     'Calories: insert the <b>last item</b> variable',
-    'Leave <b>Distance empty</b> — a distance on a strength workout makes it fail. Tap Done.'
+    'Tap the circle arrow after <b>workout</b> to show more rows. Tap the faded <b>10</b> next to <b>Distance</b> and type <b>0</b>. An empty Distance makes Log Workout fail.',
+    'Optional, for the right start time: Add Action → <b>Adjust Date</b>, drag it above Log Workout. Long-press its blue values so it reads <b>Subtract First Item minutes from Current Date</b>. Then in Log Workout, long-press <b>optional</b> next to Date → <b>Adjusted Date</b>. Tap Done.'
   ], note: 'The app sends something like <code>42,210</code> meaning 42 minutes and 210 kcal.' },
   logCardio: { title: 'Log cardio workout', why: 'Same, for cardio sessions.', mins: 1, steps: [
     'Open <b>Log strength workout</b>, tap its name at the top, choose <b>Duplicate</b>',
@@ -3522,9 +3412,9 @@ const Setup = {
       <div class="card mt"><b>When something misbehaves</b><ul class="ol small mute">
         <li>Wrong sample type is the most common mistake. Open the action and read the type back.</li>
         <li>Names are case-sensitive. Use the Copy button rather than typing.</li>
-        <li>First run asks Health permission per data type. Allow it.</li>
+        <li>Health permission: Settings → Health → Data Access &amp; Devices → Shortcuts → <b>Turn On All</b>.</li>
         <li>Nothing comes back? Run the shortcut with its ▶ button inside Shortcuts. If it errors there, the problem is in the shortcut, not the app.</li>
-        <li>A distance value on a strength workout makes Log Workout fail.</li>
+        <li>An empty Distance makes Log Workout fail. Type <b>0</b> in it.</li><li>Test with ▶ inside Shortcuts first. That's where Health asks for permission.</li>
       </ul></div>
       <div style="height:16px"></div></div>`;
   },
