@@ -933,9 +933,9 @@ const Bridge = {
   parseReadiness(text) {
     // accepts "hrv,rhr,sleep" or labeled "hrv:52 rhr:58 sleep:7.2" or lines
     const rec = { date: todayStr(), hrv: null, rhr: null, sleep: null };
-    const lab = /(hrv|rhr|sleep|hr)[^\d]*(\d+(\.\d+)?)/gi; let m, any = false;
-    while ((m = lab.exec(text))) { any = true; const k = m[1].toLowerCase(); const v = parseFloat(m[2]); if (k === 'hrv') rec.hrv = v; else if (k === 'rhr' || k === 'hr') rec.rhr = v; else rec.sleep = v > 24 ? v / 60 : v; }
-    if (!any) { const nums = (text.match(/\d+(\.\d+)?/g) || []).map(parseFloat); if (!nums.length) return null; rec.hrv = nums[0] ?? null; rec.rhr = nums[1] ?? null; rec.sleep = nums[2] != null ? (nums[2] > 24 ? nums[2] / 60 : nums[2]) : null; }
+    const lab = /(hrv|rhr|sleep|hr)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/gi; let m, any = false; // a blank label never borrows the next label's number
+    while ((m = lab.exec(text))) { any = true; const k = m[1].toLowerCase(); const v = parseFloat(m[2].replace(',', '.')); if (k === 'hrv') rec.hrv = v; else if (k === 'rhr' || k === 'hr') rec.rhr = v; else rec.sleep = v > 24 ? v / 60 : v; }
+    if (!any && !/(hrv|rhr|sleep)\s*:/i.test(text)) { const nums = (text.match(/\d+(\.\d+)?/g) || []).map(parseFloat); if (!nums.length) return null; rec.hrv = nums[0] ?? null; rec.rhr = nums[1] ?? null; rec.sleep = nums[2] != null ? (nums[2] > 24 ? nums[2] / 60 : nums[2]) : null; }
     if (rec.hrv == null && rec.rhr == null && rec.sleep == null) return null;
     return rec;
   }
@@ -3432,26 +3432,25 @@ const SC_STEPS = {
     'Tap the circle arrow after <b>workout</b> to show more rows. Tap the faded <b>10</b> next to <b>Distance</b> and type <b>0</b>. An empty Distance makes Log Workout fail.',
     'Optional, for the right start time: Add Action → <b>Adjust Date</b>, drag it above Log Workout. Long-press its blue values so it reads <b>Subtract First Item minutes from Current Date</b>. Then in Log Workout, long-press <b>optional</b> next to Date → <b>Adjusted Date</b>. Tap Done.'
   ], note: 'The app sends something like <code>42,210</code> meaning 42 minutes and 210 kcal.' },
-  logCardio: { title: 'Log cardio workout', why: 'Same, for cardio sessions.', mins: 1, steps: [
-    'Open <b>Log strength workout</b>, tap its name at the top, choose <b>Duplicate</b>',
-    'Rename the copy → paste the name above',
-    'Tap the <b>Log Workout</b> action and change the type to <b>Mixed Cardio</b>',
-    'Tap Done.'
+  logCardio: { title: 'Log cardio workout', why: 'Same, for cardio sessions.', mins: 2, steps: [
+    'In <b>All Shortcuts</b>, long-press the <b>WT Log Strength</b> tile → <b>Duplicate</b>',
+    'Open the copy. Tap its name at the top → <b>Rename</b> → paste the name above',
+    'Tap the blue <b>Traditional Strength Training</b> → choose <b>Mixed Cardio</b>. Keep Distance at <b>0</b>. Tap Done.'
   ] },
-  readiness: { title: 'Readiness', why: 'Pulls HRV, resting heart rate and sleep each morning.', mins: 6, steps: [
-    'New shortcut → Rename → paste the name above',
-    'Add Action → <b>Find Health Samples</b>: type <b>Heart Rate Variability</b>, Show More → Start Date, Latest First, Limit <b>1</b>',
-    'Add Action → <b>Get Details of Health Sample</b> → <b>Value</b>. Tap the result variable → <b>Rename</b> → <code>HRV</code>',
-    'Repeat those two actions for <b>Resting Heart Rate</b>. Rename the result <code>RHR</code>',
-    'Optional sleep: Find Health Samples type <b>Sleep Analysis</b>, filter Start Date <b>is in the last 1 day</b>. Then <b>Get Details</b> → <b>Duration</b>, then <b>Calculate Statistics</b> → <b>Sum</b>. Rename it <code>SLEEP</code>',
-    'Add Action → <b>Text</b> and build: <code>hrv:[HRV] rhr:[RHR] sleep:[SLEEP]</code> using the renamed variables',
-    'Add Action → <b>Stop and Output</b> that Text. Tap Done.'
-  ], note: 'Sleep is the fiddly one. Skip it if it fights you — the app lets you type sleep hours by hand and still scores readiness.' },
+  readiness: { title: 'Readiness', why: 'Pulls HRV and resting heart rate each morning.', mins: 6, steps: [
+    'New shortcut → tap its name at the top → <b>Rename</b> → paste the name above',
+    'Add Action → <b>Find Health Samples</b>. Tap the blue value after <b>Type is</b> → <b>Heart Rate Variability</b>. Sort by <b>Start Date</b>, Order <b>Latest First</b>, Limit on, <b>1</b>',
+    'Add Action → <b>Get Details of Health Sample</b>. Tap the blue word after <b>Get</b> → <b>Value</b>',
+    'Add Action → <b>Set Variable</b>. Tap <b>Variable Name</b> → type <code>HRV</code>',
+    'Add the same three actions again for <b>Resting Heart Rate</b>. Name the variable <code>RHR</code>',
+    'Add Action → <b>Text</b>. Type <code>hrv:</code> then tap <b>HRV</b> in the row above the keyboard. Type a space and <code>rhr:</code> then tap <b>RHR</b>',
+    'Add Action → <b>Stop and Output</b>. It should say <b>Text</b>. Tap Done.'
+  ], note: "If Health has no reading for one of them, that part comes back blank. That's fine — the app scores with what it gets. Sleep can be typed in the app." },
   logWeight: { title: 'Log weight', why: 'Writes a weigh-in from the app into Health.', mins: 2, steps: [
-    'New shortcut → Rename → paste the name above',
+    'New shortcut → tap its name at the top → <b>Rename</b> → paste the name above',
     'Add Action → <b>Log Health Sample</b>',
     'Type: <b>Weight</b>',
-    'Value: insert <b>Shortcut Input</b>',
+    'Value: long-press it → <b>Shortcut Input</b>',
     'Unit: <b>' + (useLb() ? 'lb' : 'kg') + '</b>. Tap Done.'
   ] }
 };
