@@ -241,6 +241,12 @@ body.calm .cue{transition:none}
 .swatches{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
 .swatch{width:34px;height:34px;min-height:0;padding:0;border-radius:50%;border:2px solid rgba(255,255,255,.15);flex:none}
 .swatch.on{border-color:var(--acc);box-shadow:0 0 0 3px rgba(52,208,182,.25)}
+.modeTag{display:inline-block;padding:5px 11px;border-radius:999px;font-size:.8rem;font-weight:800;letter-spacing:.04em;text-transform:uppercase;background:color-mix(in srgb,var(--acc) 22%,transparent);color:var(--acc)}
+.modeTag.flow{background:color-mix(in srgb,var(--gold) 22%,transparent);color:var(--gold)}
+.modeTag.roll{background:color-mix(in srgb,var(--acc2) 22%,transparent);color:var(--acc2)}
+.sideBadge{display:inline-block;margin-top:8px;padding:6px 14px;border-radius:12px;font-weight:800;font-size:1.05rem;background:var(--field);border:1px solid var(--line)}
+.sideBadge.sideL{border-color:color-mix(in srgb,var(--acc) 60%,transparent)} .sideBadge.sideR{border-color:color-mix(in srgb,var(--gold) 60%,transparent)}
+.stopwatch.prep{color:var(--gold)}
 .lookprev{width:120px;height:120px;flex:none;border-radius:18px;background:var(--bg2,#1b2033);overflow:hidden}.lookprev svg{width:100%;height:100%}
 </style>
 </head>
@@ -301,7 +307,8 @@ function defaultState() {
     lastAdjust: null,
     scLinks: withDefaultLinks({}), scBuilt: {},
     shortcuts: { readWeight: 'WT Read Weight', logStrength: 'WT Log Strength', logCardio: 'WT Log Cardio', readiness: 'WT Readiness', logWeight: 'WT Log Weight' },
-    flags: { calm: false, showCal: true, cycle28: false, pace: 'standard', mute: false },
+    flags: { calm: false, showCal: true, cycle28: false, pace: 'standard', mute: false, beep: true, auto: true },
+    mobAvoid: [],            // stretches the user asked never to be given again
     pending: null,
     active: null,            // in-progress session
     swaps: {},               // dayIdx-slot -> exId
@@ -317,7 +324,7 @@ function normalizeState(s) {
     seen: Object.assign(defaultState().seen, obj(s.seen)), scLinks: withDefaultLinks(obj(s.scLinks)), scBuilt: obj(s.scBuilt),
     sessions: arr(s.sessions).filter(x => x && typeof x.date === 'string'), weights: arr(s.weights).filter(w => w && typeof w.date === 'string' && isFinite(w.kg)),
     readiness: arr(s.readiness).filter(r => r && typeof r.date === 'string'), intake: arr(s.intake), adjust: arr(s.adjust),
-    calib: obj(s.calib), loads: obj(s.loads), swaps: obj(s.swaps), intensity: isFinite(s.intensity) ? clamp(s.intensity, 0.7, 1.3) : 1
+    calib: obj(s.calib), loads: obj(s.loads), swaps: obj(s.swaps), mobAvoid: arr(s.mobAvoid).filter(x => typeof x === 'string'), intensity: isFinite(s.intensity) ? clamp(s.intensity, 0.7, 1.3) : 1
   });
   if (out.profile && (typeof out.profile !== 'object' || !Array.isArray(out.profile.days))) out.profile = null;
   if (out.profile && !Array.isArray(out.profile.equipment)) out.profile.equipment = [];
@@ -373,14 +380,14 @@ const EX = [
   { id: 'kbsw', n: 'Kettlebell Swing', pat: 'hinge', equip: ['kb'], reg: ['lowback', 'hip'], lower: true, cue: 'Snap the hips. Arms are ropes, not levers.' },
   { id: 'hipthr', n: 'Hip Thrust', pat: 'glute', equip: ['bb', 'db', 'bw'], reg: ['hip'], lower: true, cue: 'Shoulders on a bench or couch, chin tucked, squeeze at the top.' },
   { id: 'glbr', n: 'Glute Bridge', pat: 'glute', equip: ['bw', 'band'], reg: [], lower: true, bwOnly: true, cue: 'Heels close to hips. Drive through heels, pause at the top.' },
-  { id: 'slrdl', n: 'Single-leg RDL', pat: 'hinge', equip: ['db', 'kb', 'bw'], reg: ['hip', 'ankle'], lower: true, cue: 'Hips square. Reach the back leg long. Slow and controlled.' },
+  { id: 'slrdl', uni: true, n: 'Single-leg RDL', pat: 'hinge', equip: ['db', 'kb', 'bw'], reg: ['hip', 'ankle'], lower: true, cue: 'Hips square. Reach the back leg long. Slow and controlled.' },
   { id: 'backext', n: 'Back Extension', pat: 'hinge', equip: ['machine'], reg: ['lowback'], lower: true, cue: 'Hinge at the hip, not the spine. Do not overextend at the top.' },
   { id: 'goodm', n: 'Band Good Morning', pat: 'hinge', equip: ['band'], reg: ['lowback', 'hip'], lower: true, cue: 'Band around neck and under feet. Hinge, then stand tall.' },
   // lunge
-  { id: 'revl', n: 'Reverse Lunge', pat: 'lunge', equip: ['bw', 'db', 'kb'], reg: ['knee', 'hip'], lower: true, cue: 'Step back, drop the back knee, drive up through the front heel.' },
-  { id: 'bss', n: 'Bulgarian Split Squat', pat: 'lunge', equip: ['db', 'bw'], reg: ['knee', 'hip', 'ankle'], lower: true, cue: 'Rear foot up on a bench or chair. Most weight on the front leg.' },
-  { id: 'stepup', n: 'Step-up', pat: 'lunge', equip: ['bw', 'db'], reg: ['knee', 'hip'], lower: true, cue: 'Step fully onto a box, bench or sturdy step. Do not push off the back foot.' },
-  { id: 'splitsq', n: 'Split Squat', pat: 'lunge', equip: ['bw', 'db'], reg: ['knee', 'hip'], lower: true, cue: 'Staggered stance. Straight down, straight up.' },
+  { id: 'revl', uni: true, n: 'Reverse Lunge', pat: 'lunge', equip: ['bw', 'db', 'kb'], reg: ['knee', 'hip'], lower: true, cue: 'Step back, drop the back knee, drive up through the front heel.' },
+  { id: 'bss', uni: true, n: 'Bulgarian Split Squat', pat: 'lunge', equip: ['db', 'bw'], reg: ['knee', 'hip', 'ankle'], lower: true, cue: 'Rear foot up on a bench or chair. Most weight on the front leg.' },
+  { id: 'stepup', uni: true, n: 'Step-up', pat: 'lunge', equip: ['bw', 'db'], reg: ['knee', 'hip'], lower: true, cue: 'Step fully onto a box, bench or sturdy step. Do not push off the back foot.' },
+  { id: 'splitsq', uni: true, n: 'Split Squat', pat: 'lunge', equip: ['bw', 'db'], reg: ['knee', 'hip'], lower: true, cue: 'Staggered stance. Straight down, straight up.' },
   // push horizontal
   { id: 'pushup', n: 'Push-up', pat: 'pushH', equip: ['bw'], reg: ['shoulder', 'wrist', 'elbow'], bwOnly: true, cue: 'Body in one line. Elbows at 45°. Chest to floor.' },
   { id: 'bench', n: 'Bench Press', pat: 'pushH', equip: ['bb'], needs: ['bench'], reg: ['shoulder', 'elbow', 'wrist'], big: true, cue: 'Shoulder blades pinched. Bar to lower chest. Feet planted.' },
@@ -398,7 +405,7 @@ const EX = [
   { id: 'latraise', n: 'Lateral Raise', pat: 'shoulderAcc', equip: ['db', 'band', 'cable'], reg: ['shoulder'], cue: 'Lead with elbows. Stop at shoulder height. Light weight.' },
   // pull horizontal
   { id: 'bbrow', n: 'Barbell Row', pat: 'pullH', equip: ['bb'], reg: ['lowback', 'shoulder', 'elbow'], big: true, cue: 'Hinge to 45°. Pull to lower ribs. Do not heave.' },
-  { id: 'dbrow', n: 'Dumbbell Row', pat: 'pullH', equip: ['db', 'kb'], reg: ['shoulder', 'elbow'], cue: 'One hand braced. Pull elbow toward hip, pause at the top.' },
+  { id: 'dbrow', uni: true, n: 'Dumbbell Row', pat: 'pullH', equip: ['db', 'kb'], reg: ['shoulder', 'elbow'], cue: 'One hand braced. Pull elbow toward hip, pause at the top.' },
   { id: 'cabrow', n: 'Seated Cable Row', pat: 'pullH', equip: ['cable', 'machine'], reg: ['lowback', 'shoulder'], cue: 'Chest tall. Pull to the stomach, squeeze the blades together.' },
   { id: 'bandrow', n: 'Band Row', pat: 'pullH', equip: ['band'], reg: ['shoulder'], cue: 'Anchor at chest height or sit with band around feet.' },
   { id: 'invrow', n: 'Inverted Row', pat: 'pullH', equip: ['bw'], needs: ['bar'], reg: ['shoulder', 'elbow'], bwOnly: true, cue: 'Under a bar or sturdy table. Body straight, chest to the bar.' },
@@ -426,13 +433,29 @@ const EX = [
   { id: 'deadbug', n: 'Dead Bug', pat: 'core', equip: ['bw'], reg: [], bwOnly: true, cue: 'Lower back pressed to the floor. Opposite arm and leg, slow.' },
   { id: 'pallof', n: 'Pallof Press', pat: 'core', equip: ['band', 'cable'], reg: [], cue: 'Anchor at the side. Press out, resist the twist.' },
   { id: 'hkr', n: 'Hanging Knee Raise', pat: 'core', equip: ['bar'], reg: ['shoulder'], bwOnly: true, cue: 'No swinging. Curl the pelvis up.' },
-  { id: 'sideplank', n: 'Side Plank', pat: 'core', equip: ['bw'], reg: ['shoulder'], bwOnly: true, timed: true, cue: 'Straight line from head to heels. Both sides.' },
+  { id: 'sideplank', uni: true, n: 'Side Plank', pat: 'core', equip: ['bw'], reg: ['shoulder'], bwOnly: true, timed: true, cue: 'Straight line from head to heels. Both sides.' },
   { id: 'birddog', n: 'Bird Dog', pat: 'core', equip: ['bw'], reg: [], bwOnly: true, cue: 'Reach long, stay level. Slow.' },
   { id: 'cabcrunch', n: 'Cable Crunch', pat: 'core', equip: ['cable'], reg: ['neck'], cue: 'Kneel. Curl the spine, elbows to knees.' },
   // carry
   { id: 'farmer', n: 'Farmer Carry', pat: 'carry', equip: ['db', 'kb'], reg: ['wrist'], timed: true, cue: 'Heavy weight in each hand. Walk tall for distance or time.' },
-  { id: 'suitcase', n: 'Suitcase Carry', pat: 'carry', equip: ['db', 'kb'], reg: ['wrist'], timed: true, cue: 'One hand. Do not lean. Swap sides.' },
-  { id: 'bwcarry', n: 'Overhead Reach Walk', pat: 'carry', equip: ['bw'], reg: ['shoulder'], bwOnly: true, timed: true, cue: 'Arms overhead, walk slowly, ribs down.' }
+  { id: 'suitcase', uni: true, n: 'Suitcase Carry', pat: 'carry', equip: ['db', 'kb'], reg: ['wrist'], timed: true, cue: 'One hand. Do not lean. Swap sides.' },
+  { id: 'bwcarry', n: 'Overhead Reach Walk', pat: 'carry', equip: ['bw'], reg: ['shoulder'], bwOnly: true, timed: true, cue: 'Arms overhead, walk slowly, ribs down.' },
+  // weighted vest: the vest's weight is fixed, so these progress by reps (or seconds)
+  { id: 'vestsq', n: 'Weighted Vest Squat', pat: 'squat', equip: ['vest'], reg: ['knee', 'hip', 'lowback'], lower: true, bwOnly: true, cue: 'Vest on and snug. Sit down between your heels, chest tall, then drive up.' },
+  { id: 'vestlunge', uni: true, n: 'Weighted Vest Reverse Lunge', pat: 'lunge', equip: ['vest'], reg: ['knee', 'hip'], lower: true, bwOnly: true, cue: 'Vest on. Step back, drop the back knee, drive up through the front heel.' },
+  { id: 'vestpu', n: 'Weighted Vest Push-up', pat: 'pushH', equip: ['vest'], reg: ['shoulder', 'wrist', 'elbow'], bwOnly: true, cue: 'Vest on. Body in one straight line, elbows at 45°, chest to the floor.' },
+  { id: 'vestpull', n: 'Weighted Vest Pull-up', pat: 'pullV', equip: ['vest'], needs: ['bar'], reg: ['shoulder', 'elbow'], bwOnly: true, cue: 'Vest on. Dead hang, pull your chest to the bar, lower slowly.' },
+  { id: 'vestmarch', n: 'Weighted Vest March', pat: 'carry', equip: ['vest'], reg: [], bwOnly: true, timed: true, cue: 'Vest on. Walk or march on the spot, tall, ribs down, knees up.' },
+  // Bosu ball
+  { id: 'bosusq', n: 'Bosu Squat', pat: 'squat', equip: ['bosu'], reg: ['knee', 'ankle'], lower: true, bwOnly: true, cue: 'Stand on the dome, feet hip-width. Squat slowly, knees over toes, stay balanced.' },
+  { id: 'bosusplit', uni: true, n: 'Bosu Split Squat', pat: 'lunge', equip: ['bosu'], reg: ['knee', 'ankle', 'hip'], lower: true, bwOnly: true, cue: 'Front foot on the dome, back foot on the floor. Straight down, straight up.' },
+  { id: 'bosubridge', n: 'Bosu Glute Bridge', pat: 'glute', equip: ['bosu'], reg: [], lower: true, bwOnly: true, cue: 'Lie on your back, heels on the dome. Drive the hips up, squeeze, lower slowly.' },
+  { id: 'bosupu', n: 'Bosu Push-up', pat: 'pushH', equip: ['bosu'], reg: ['shoulder', 'wrist', 'elbow'], bwOnly: true, cue: 'Flip the Bosu dome-side down. Hands on the edges of the flat side. Keep it level as you lower.' },
+  { id: 'bosuplank', n: 'Bosu Plank', pat: 'core', equip: ['bosu'], reg: ['shoulder', 'wrist'], bwOnly: true, timed: true, cue: 'Hands on the flat side, dome down. Body in one line. Keep the platform still.' },
+  // ankle weights
+  { id: 'ankkick', uni: true, n: 'Ankle-Weight Glute Kickback', pat: 'glute', equip: ['ankle'], reg: ['lowback'], lower: true, bwOnly: true, cue: 'On hands and knees, weights on. Push one heel back and up without arching your back.' },
+  { id: 'ankabd', uni: true, n: 'Ankle-Weight Side Leg Raise', pat: 'glute', equip: ['ankle'], reg: ['hip'], lower: true, bwOnly: true, cue: 'Stand tall, hold something for balance. Lift one leg out to the side, toes forward, lower slowly.' },
+  { id: 'anklegr', n: 'Ankle-Weight Leg Raise', pat: 'core', equip: ['ankle'], reg: ['lowback'], bwOnly: true, cue: 'On your back, lower back pressed down. Lower straight legs slowly, stop before your back arches.' }
 ];
 const EXMAP = Object.fromEntries(EX.map(e => [e.id, e]));
 
@@ -450,27 +473,85 @@ const CARDIO = [
 ];
 const CARDIOMAP = Object.fromEntries(CARDIO.map(c => [c.id, c]));
 
-/* mobility moves */
+/* stretching, mobility, yoga, foam roller and massage moves
+   mode  hold = get into the position and stay still · flow = keep repeating the movement the whole time · roll = keep rolling / gliding
+   uni   done one side at a time: left first, then the right side straight after
+   side  which side the animation shows (the other side is drawn as its mirror image)
+   part  what the side label refers to, e.g. "Left calf", "Right foot forward"
+   pos   stand · floor · kneel · fours · wall. Only standing moves that need no gear are used out on a trail.
+   ph    order within a session: 0 foam roller, 1 warm-up, 2 main, 3 cool-down holds, 4 massage gun
+   area  body area, used to suggest similar moves when you replace one
+   sec   seconds per side (or in total, for two-sided moves) */
 const MOB = [
-  { id: 'catcow', n: 'Cat-Cow', reg: [], cue: 'On all fours. Round, then arch. Move with the breath.' },
-  { id: '9090', n: '90/90 Hip Switch', reg: ['knee'], cue: 'Seated, both knees at 90°. Rotate side to side.' },
-  { id: 'wgs', n: "World's Greatest Stretch", reg: ['knee', 'hip'], cue: 'Lunge, elbow to instep, rotate and reach up.' },
-  { id: 'couch', n: 'Couch Stretch', reg: ['knee'], cue: 'Rear foot up a wall. Squeeze the glute. Hip flexor stretch.' },
-  { id: 'tspine', n: 'Thoracic Rotation', reg: [], cue: 'On all fours, hand behind head, rotate elbow to ceiling.' },
-  { id: 'hams', n: 'Hamstring Sweep', reg: ['lowback'], cue: 'Heel out, hinge and sweep hands past the toes.' },
-  { id: 'calf', n: 'Calf Stretch', reg: [], cue: 'Hands on wall, back leg straight, heel down.' },
-  { id: 'shcars', n: 'Shoulder Circles', reg: [], cue: 'Slow, large circles. Explore the full range.' },
-  { id: 'dog', n: 'Downward Dog', reg: ['wrist', 'shoulder'], cue: 'Press the floor away, pedal the heels.' },
-  { id: 'child', n: "Child's Pose", reg: ['knee'], cue: 'Knees wide, reach forward, breathe into the back.' },
-  { id: 'pigeon', n: 'Pigeon', reg: ['knee', 'hip'], cue: 'Front shin across. Square the hips. Ease in.' },
-  { id: 'wall', n: 'Wall Slides', reg: ['shoulder'], cue: 'Back to wall, arms slide up without arching.' },
-  { id: 'ankle', n: 'Ankle Rocks', reg: [], cue: 'Half-kneel, drive the knee over the toes.' },
-  { id: 'hipcircles', n: 'Hip Circles', reg: [], cue: 'On all fours. Big slow circles with one knee.' }
+  // on the floor, kneeling or against a wall
+  { id: 'catcow', n: 'Cat-Cow', mode: 'flow', pos: 'fours', yoga: true, ph: 1, sec: 45, area: 'back', reg: [], cue: 'On hands and knees. Breathe in as you drop the belly and lift the chest. Breathe out as you round your back up. Keep flowing between the two.' },
+  { id: '9090', n: '90/90 Hip Switch', mode: 'flow', pos: 'floor', ph: 2, sec: 45, area: 'hip', reg: ['knee'], cue: 'Sit tall with both knees bent to 90°, one in front, one to the side. Rock both knees over to the other side, then back. Keep switching, slow and smooth.' },
+  { id: 'wgs', n: "World's Greatest Stretch", mode: 'flow', uni: true, side: 'R', part: 'foot forward', pos: 'floor', ph: 1, sec: 30, area: 'hip', reg: ['knee', 'hip'], cue: 'Long lunge, back knee off the floor. Both hands down inside the front foot, then twist and reach the inside arm to the sky. Bring it down and repeat.' },
+  { id: 'couch', n: 'Couch Stretch', mode: 'hold', uni: true, side: 'L', part: 'leg back', pos: 'wall', ph: 3, sec: 45, area: 'quad', reg: ['knee'], cue: 'Kneel with your back shin up against a wall or couch, front foot flat. Squeeze the back glute and stay tall.' },
+  { id: 'tspine', n: 'Thoracic Rotation', mode: 'flow', uni: true, side: 'R', part: 'arm', pos: 'fours', ph: 1, sec: 30, area: 'back', reg: [], cue: 'On hands and knees, one hand behind your head. Rotate that elbow down under you, then up to the ceiling. Follow it with your eyes.' },
+  { id: 'calf', n: 'Wall Calf Stretch', mode: 'hold', uni: true, side: 'L', part: 'calf', pos: 'wall', ph: 3, sec: 40, area: 'calf', reg: [], cue: 'Hands on a wall. Step one foot back, back knee straight, heel pressed to the floor. Lean in until you feel the calf.' },
+  { id: 'wall', n: 'Wall Slides', mode: 'flow', pos: 'wall', ph: 1, sec: 40, area: 'shoulder', reg: ['shoulder'], cue: 'Back, head and arms against a wall. Slide your arms up overhead and back down without your back arching.' },
+  { id: 'ankle', n: 'Ankle Rocks', mode: 'flow', uni: true, side: 'R', part: 'ankle', pos: 'kneel', ph: 1, sec: 30, area: 'ankle', reg: [], cue: 'Half-kneel with one foot forward. Rock the front knee forward over the toes, heel down, then back.' },
+  { id: 'hipcircles', n: 'Hip Circles', mode: 'flow', uni: true, side: 'R', part: 'leg', pos: 'fours', ph: 1, sec: 30, area: 'hip', reg: [], cue: 'On hands and knees. Lift one knee and draw big, slow circles with it.' },
+  // standing: fine outdoors, on a trail, next to your bike
+  { id: 'shcars', n: 'Arm Circles', mode: 'flow', pos: 'stand', ph: 1, sec: 40, area: 'shoulder', reg: [], cue: 'Stand tall. Make big, slow circles with both arms — forwards for the first half, backwards for the second.' },
+  { id: 'hams', n: 'Hamstring Sweep', mode: 'flow', uni: true, side: 'R', part: 'heel forward', pos: 'stand', ph: 1, sec: 30, area: 'ham', reg: ['lowback'], cue: 'Step one heel forward, toes up, knee straight. Hinge at the hips and sweep both hands down past the toes, then stand back up.' },
+  { id: 'legswing', n: 'Leg Swings', mode: 'flow', uni: true, side: 'L', part: 'leg', pos: 'stand', ph: 1, sec: 30, area: 'hip', reg: ['hip'], cue: 'Hold your bike, a tree or a wall for balance. Swing one straight leg forward and back like a pendulum, a little higher each time.' },
+  { id: 'legswingside', n: 'Side Leg Swings', mode: 'flow', uni: true, side: 'R', part: 'leg', pos: 'stand', ph: 1, sec: 30, area: 'hip', reg: ['hip'], cue: 'Face your support and hold on. Swing one leg out to the side, then back across your body. Easy and relaxed.' },
+  { id: 'ankcirc', n: 'Ankle Circles', mode: 'flow', uni: true, side: 'L', part: 'ankle', pos: 'stand', ph: 1, sec: 30, area: 'ankle', reg: [], cue: 'Stand on one foot, holding on if you need to. Lift the other foot and draw slow circles with your toes. Switch direction halfway.' },
+  { id: 'trunk', n: 'Standing Trunk Twists', mode: 'flow', pos: 'stand', ph: 1, sec: 40, area: 'back', reg: ['lowback'], cue: 'Feet hip-width, arms loose. Turn your chest side to side and let the arms swing around you.' },
+  { id: 'sidebend', n: 'Standing Side Bends', mode: 'flow', pos: 'stand', ph: 1, sec: 40, area: 'back', reg: [], cue: 'Reach one arm overhead and lean to the opposite side, then switch arms and lean the other way. Slow and smooth.' },
+  { id: 'standquad', n: 'Standing Quad Stretch', mode: 'hold', uni: true, side: 'L', part: 'leg', pos: 'stand', ph: 3, sec: 40, area: 'quad', reg: ['knee'], cue: 'Stand tall — hold your bike or a tree if you need to. Pull one heel up to your backside, knees together, hips pushed slightly forward.' },
+  { id: 'standcalf', n: 'Standing Calf Stretch', mode: 'hold', uni: true, side: 'L', part: 'calf', pos: 'stand', ph: 3, sec: 40, area: 'calf', reg: [], cue: "Step one foot back, back knee straight, heel pressed down. Lean forward with your hands on your front thigh — or on your bike's saddle." },
+  { id: 'hipflex', n: 'Standing Hip Flexor Stretch', mode: 'hold', uni: true, side: 'L', part: 'leg back', pos: 'stand', ph: 3, sec: 40, area: 'hip', reg: ['knee'], cue: 'Long split stance, back heel lifted, back knee off the ground. Tuck your hips under and reach both arms up.' },
+  { id: 'fig4', n: 'Standing Figure-4', mode: 'hold', uni: true, side: 'L', part: 'ankle crossed', pos: 'stand', ph: 3, sec: 40, area: 'glute', reg: ['knee', 'hip'], cue: 'Hold something for balance. Cross one ankle over the other knee, then sit back as if into a chair until you feel it in the outer hip.' },
+  { id: 'wrist', n: 'Wrist & Forearm Stretch', mode: 'hold', uni: true, side: 'R', part: 'arm', pos: 'stand', ph: 3, sec: 30, area: 'wrist', reg: ['wrist'], cue: 'Hold one arm straight out, palm up. Use the other hand to gently pull the fingers down and back. Great after gripping the bars.' },
+  { id: 'chest', n: 'Chest Opener', mode: 'hold', pos: 'stand', ph: 3, sec: 30, area: 'chest', reg: ['shoulder'], cue: 'Clasp your hands behind your back. Straighten the arms, lift them a little and open the chest.' },
+  { id: 'armcross', n: 'Cross-Body Shoulder Stretch', mode: 'hold', uni: true, side: 'L', part: 'arm', pos: 'stand', ph: 3, sec: 30, area: 'shoulder', reg: ['shoulder'], cue: 'Bring one arm straight across your chest. Use the other hand to hug it in just above the elbow. Shoulders down.' },
+  // yoga
+  { id: 'sunsal', n: 'Half Sun Salutation', mode: 'flow', pos: 'stand', yoga: true, ph: 1, sec: 60, area: 'full', reg: ['lowback'], cue: 'Reach up, fold down, lift halfway with a flat back, fold again, then sweep back up. One breath per move.' },
+  { id: 'chairfold', n: 'Chair to Forward Fold', mode: 'flow', pos: 'stand', yoga: true, ph: 1, sec: 45, area: 'full', reg: ['knee', 'lowback'], cue: 'Sit back into Chair Pose with your arms up, then straighten your legs and fold forward. Move between the two with the breath.' },
+  { id: 'fold', n: 'Standing Forward Fold', mode: 'hold', pos: 'stand', yoga: true, ph: 3, sec: 40, area: 'ham', reg: ['lowback'], cue: 'Feet hip-width, knees soft. Fold forward from the hips and let your head and arms hang heavy.' },
+  { id: 'warrior1', n: 'Warrior I', mode: 'hold', uni: true, side: 'R', part: 'foot forward', pos: 'stand', yoga: true, ph: 2, sec: 30, area: 'hip', reg: ['knee'], cue: 'Big step back, back foot angled out, heel down. Bend the front knee over the ankle, hips facing forward, arms overhead.' },
+  { id: 'warrior2', n: 'Warrior II', mode: 'hold', uni: true, side: 'R', part: 'knee bent', pos: 'stand', yoga: true, ph: 2, sec: 30, area: 'hip', reg: ['knee'], cue: 'Feet wide. Turn the front foot out and bend that knee over the ankle. Arms straight out at shoulder height, eyes over the front hand.' },
+  { id: 'revwar', n: 'Warrior II to Reverse Warrior', mode: 'flow', uni: true, side: 'R', part: 'knee bent', pos: 'stand', yoga: true, ph: 2, sec: 30, area: 'back', reg: ['knee'], cue: 'Start in Warrior II. Sweep the front arm up and back as the back hand slides down the back leg, then return. Move with the breath.' },
+  { id: 'triangle', n: 'Triangle Pose', mode: 'hold', uni: true, side: 'R', part: 'foot forward', pos: 'stand', yoga: true, ph: 2, sec: 30, area: 'ham', reg: ['lowback'], cue: 'Feet wide, front foot turned out, both legs straight. Reach forward, then tip down so the front hand rests on your shin. Top arm up to the sky.' },
+  { id: 'tree', n: 'Tree Pose', mode: 'hold', uni: true, side: 'R', part: 'foot lifted', pos: 'stand', yoga: true, ph: 2, sec: 30, area: 'ankle', reg: ['ankle'], cue: 'Stand on one leg. Place the other foot on your inner calf or thigh — never on the knee. Palms together overhead.' },
+  { id: 'dog', n: 'Downward Dog', mode: 'hold', pos: 'fours', yoga: true, ph: 2, sec: 45, area: 'calf', reg: ['wrist', 'shoulder'], cue: 'Hands and feet on the floor, hips high like an upside-down V. Press the floor away and let your heels sink toward it.' },
+  { id: 'updog', n: 'Upward Dog', mode: 'hold', pos: 'floor', yoga: true, ph: 2, sec: 30, area: 'chest', reg: ['wrist', 'lowback'], cue: 'Lie face down, hands under your shoulders. Straighten the arms and lift your chest, tops of the feet pressing down, thighs off the floor.' },
+  { id: 'dogflow', n: 'Down Dog to Up Dog Flow', mode: 'flow', pos: 'fours', yoga: true, ph: 2, sec: 45, area: 'full', reg: ['wrist', 'shoulder', 'lowback'], cue: 'From Downward Dog, shift forward to a plank, lower the hips and lift the chest into Upward Dog, then push back to Downward Dog.' },
+  { id: 'lowlunge', n: 'Low Lunge', mode: 'hold', uni: true, side: 'R', part: 'foot forward', pos: 'kneel', yoga: true, ph: 3, sec: 30, area: 'hip', reg: ['knee'], cue: 'Front foot forward, back knee down on the mat. Sink the hips forward and reach both arms up.' },
+  { id: 'pigeon', n: 'Pigeon Pose', mode: 'hold', uni: true, side: 'R', part: 'leg in front', pos: 'floor', yoga: true, ph: 3, sec: 45, area: 'glute', reg: ['knee', 'hip'], cue: 'Front shin across the mat, back leg long behind you. Square the hips and ease your chest down.' },
+  { id: 'child', n: "Child's Pose", mode: 'hold', pos: 'kneel', yoga: true, ph: 3, sec: 45, area: 'back', reg: ['knee'], cue: 'Knees wide, big toes together, sit back toward your heels. Reach your arms forward and rest your forehead down.' },
+  // foam roller
+  { id: 'rollcalf', n: 'Foam Roll Calves', mode: 'roll', needs: ['foam'], uni: true, side: 'R', part: 'calf', pos: 'floor', ph: 0, sec: 45, area: 'calf', reg: [], cue: 'Sit with one calf on the roller, the other leg crossed on top. Hands behind you, lift your hips and roll slowly from ankle to knee. Pause on tight spots.' },
+  { id: 'rollham', n: 'Foam Roll Hamstrings', mode: 'roll', needs: ['foam'], uni: true, side: 'R', part: 'leg', pos: 'floor', ph: 0, sec: 45, area: 'ham', reg: [], cue: 'Sit with the back of one thigh on the roller. Lift your hips and roll slowly from the knee to just below your seat.' },
+  { id: 'rollquad', n: 'Foam Roll Quads', mode: 'roll', needs: ['foam'], uni: true, side: 'R', part: 'thigh', pos: 'floor', ph: 0, sec: 45, area: 'quad', reg: ['shoulder'], cue: 'Face down on your forearms, one thigh on the roller. Roll slowly from just above the knee up to the hip.' },
+  { id: 'rollglute', n: 'Foam Roll Glutes', mode: 'roll', needs: ['foam'], uni: true, side: 'L', part: 'glute', pos: 'floor', ph: 0, sec: 45, area: 'glute', reg: [], cue: 'Sit on the roller, cross one ankle over the other knee and lean toward the crossed side. Roll slowly over that side of your seat.' },
+  { id: 'rollback', n: 'Foam Roll Upper Back', mode: 'roll', needs: ['foam'], pos: 'floor', ph: 0, sec: 45, area: 'back', reg: ['neck'], cue: 'Roller under your upper back, hands behind your head, feet flat. Lift your hips a little and roll slowly between the shoulder blades. Keep it off your lower back.' },
+  // massage gun
+  { id: 'gunquad', n: 'Massage Gun: Quads', mode: 'roll', needs: ['massage'], uni: true, side: 'R', part: 'thigh', pos: 'floor', ph: 4, sec: 45, area: 'quad', reg: [], cue: 'Sit with your legs out. Glide the massage gun slowly up and down the front of one thigh. Stay off bone and the kneecap.' },
+  { id: 'guncalf', n: 'Massage Gun: Calves', mode: 'roll', needs: ['massage'], uni: true, side: 'R', part: 'calf', pos: 'floor', ph: 4, sec: 45, area: 'calf', reg: [], cue: 'Sit with one knee bent. Glide the gun slowly up and down the back of the lower leg. Stay off the shin bone and the back of the knee.' },
+  { id: 'gunfore', n: 'Massage Gun: Forearms', mode: 'roll', needs: ['massage'], uni: true, side: 'R', part: 'arm', pos: 'stand', ph: 4, sec: 30, area: 'wrist', reg: [], cue: 'Hold one forearm across your body, palm down. Glide the gun along the top of the forearm, elbow to wrist. Lovely after gripping the bars.' },
+  { id: 'guntrap', n: 'Massage Gun: Shoulders', mode: 'roll', needs: ['massage'], uni: true, side: 'R', part: 'shoulder', pos: 'stand', ph: 4, sec: 30, area: 'shoulder', reg: ['neck'], cue: 'Reach across and rest the gun on top of the opposite shoulder. Glide it slowly along the muscle between neck and shoulder. Stay off the neck and spine.' },
+  // Bosu
+  { id: 'bosubal', n: 'Bosu Single-Leg Balance', mode: 'hold', needs: ['bosu'], uni: true, side: 'R', part: 'foot on the dome', pos: 'stand', ph: 2, sec: 30, area: 'ankle', reg: ['ankle', 'knee'], cue: 'Stand on the dome with one foot, the other knee lifted. Arms out, eyes on one spot ahead. Stay as still as you can.' }
 ];
+MOB.forEach(m => { m.needs = m.needs || []; m.trail = m.pos === 'stand' && !m.needs.length; });
 const MOBMAP = Object.fromEntries(MOB.map(m => [m.id, m]));
+/* what each mode means, in plain words — shown on every move so "30 sec" is never ambiguous */
+const MODE_INFO = {
+  hold: { t: 'Hold still', d: 'Get into the position, then stay there. Breathe slowly.', say: 'Get into position and hold still' },
+  flow: { t: 'Keep moving', d: 'Repeat the movement slowly for the whole time. Do not hold still.', say: 'Keep moving the whole time' },
+  roll: { t: 'Keep rolling', d: 'Move slowly back and forth for the whole time. Pause on tight spots.', say: 'Keep rolling slowly' }
+};
+function modeInfo(m) { return m.needs && m.needs.includes('massage') ? { t: 'Keep it moving', d: 'Glide the gun slowly along the muscle for the whole time.', say: 'Keep the gun moving' } : MODE_INFO[m.mode] || MODE_INFO.hold; }
+function sideLabel(m, side) { return side ? (side === 'L' ? 'Left ' : 'Right ') + (m.part || 'side') : ''; }
 
 const REGIONS = [['neck', 'Neck'], ['shoulder', 'Shoulder'], ['elbow', 'Elbow'], ['wrist', 'Wrist / hand'], ['lowback', 'Lower back'], ['hip', 'Hip'], ['knee', 'Knee'], ['ankle', 'Ankle / foot']];
-const EQUIP = [['db', 'Dumbbells'], ['kb', 'Kettlebell'], ['bb', 'Barbell & plates'], ['band', 'Resistance bands'], ['bar', 'Pull-up bar'], ['bench', 'Bench or box'], ['cable', 'Cable machine'], ['machine', 'Weight machines'], ['treadmill', 'Treadmill'], ['bike', 'Stationary bike'], ['mtb', 'Mountain bike'], ['rower', 'Rower'], ['elliptical', 'Elliptical'], ['rope', 'Jump rope']];
+const EQUIP = [['db', 'Dumbbells'], ['kb', 'Kettlebell'], ['bb', 'Barbell & plates'], ['band', 'Resistance bands'], ['bar', 'Pull-up bar'], ['bench', 'Bench or box'], ['cable', 'Cable machine'], ['machine', 'Weight machines'],
+  ['vest', 'Weighted vest'], ['bosu', 'Bosu ball'], ['ankle', 'Ankle weights'], ['foam', 'Foam roller'], ['massage', 'Massage gun / device'],
+  ['treadmill', 'Treadmill'], ['bike', 'Stationary bike'], ['mtb', 'Mountain bike'], ['rower', 'Rower'], ['elliptical', 'Elliptical'], ['rope', 'Jump rope']];
 /* =========================================================
    PROGRAM ENGINE
    ========================================================= */
@@ -502,15 +583,15 @@ const TYPE_INFO = {
 function availEquip(p) {
   const set = new Set(['bw', 'outdoor']);
   if (p.setting === 'home_none') return set;   // "Home + no gear" is bodyweight only, whatever is ticked
-  if (p.setting === 'gym') ['db', 'kb', 'bb', 'band', 'bar', 'bench', 'cable', 'machine', 'treadmill', 'bike', 'rower', 'elliptical', 'rope'].forEach(k => set.add(k));  // a gym does not give you a mountain bike
+  if (p.setting === 'gym') ['db', 'kb', 'bb', 'band', 'bar', 'bench', 'cable', 'machine', 'treadmill', 'bike', 'rower', 'elliptical', 'rope', 'foam', 'bosu'].forEach(k => set.add(k));  // a gym does not give you a mountain bike (or a vest, ankle weights or a massage gun)
   (p.equipment || []).forEach(k => set.add(k));
   return set;
 }
 // equipment preference order per setting
 function equipRank(p) {
-  if (p.goal === 'strength') return ['bb', 'db', 'kb', 'machine', 'cable', 'bar', 'band', 'bw'];
-  if (p.setting === 'gym') return ['db', 'bb', 'cable', 'machine', 'kb', 'bar', 'band', 'bw'];
-  return ['db', 'kb', 'bar', 'band', 'bench', 'bw'];
+  if (p.goal === 'strength') return ['bb', 'db', 'kb', 'machine', 'cable', 'bar', 'vest', 'band', 'bosu', 'ankle', 'bw'];
+  if (p.setting === 'gym') return ['db', 'bb', 'cable', 'machine', 'kb', 'bar', 'band', 'vest', 'bosu', 'ankle', 'bw'];
+  return ['db', 'kb', 'vest', 'bar', 'band', 'bosu', 'ankle', 'bench', 'bw'];
 }
 function candidates(pattern, p, exclude, excludeRegions) {
   const avail = availEquip(p), rank = equipRank(p);
@@ -555,13 +636,60 @@ function buildStrength(type, p, dayIdx) {
     const [lo, hi] = repRange(p, ex);
     list.push({ exId: ex.id, pat, sets: setsFor(p, ex), lo, hi, slot: i });
   }
-  const mob = p.goal === 'flex' ? pickMob(4, dayIdx) : pickMob(2, dayIdx);
-  const sess = { type, title: TYPE_INFO[type].title, kind: 'strength', exercises: list, mobility: mob, warm };
+  const mob = pickWarm(p, dayIdx, warm * 60);
+  const sess = { type, title: TYPE_INFO[type].title, kind: 'strength', exercises: list, mobility: mob, warmSteps: mkSteps(mob), warm };
   if (cardioTail) sess.cardio = buildCardio('C', p, dayIdx, cardioTail);
   return sess;
 }
-function pickMob(n, seed) {
-  const out = []; for (let i = 0; i < n; i++) out.push(MOB[(seed * 3 + i * 5) % MOB.length].id); return out;
+/* ---------- stretching sessions: every one-sided move is done left, then right, straight after ---------- */
+const MOB_TRANS = 10, MOB_SWITCH = 5;     // "get ready" seconds before a new move, and before the second side
+function mobSec(m, scale) { return Math.max(20, Math.round(m.sec * (scale || 1) / 5) * 5); }
+function mobCost(id, scale) { const m = MOBMAP[id]; const sec = mobSec(m, scale); return m.uni ? sec * 2 + MOB_SWITCH + MOB_TRANS : sec + MOB_TRANS; }
+function mkSteps(ids, scale) {
+  const out = [];
+  (ids || []).forEach(id => { const m = MOBMAP[id]; if (!m) return; const sec = mobSec(m, scale); if (m.uni) out.push({ id, side: 'L', sec }, { id, side: 'R', sec }); else out.push({ id, side: null, sec }); });
+  return out;
+}
+function stepGap(steps, k) { return k <= 0 ? 0 : (steps[k].id === steps[k - 1].id ? MOB_SWITCH : MOB_TRANS); }
+/* seconds from step `from` to the end, including the short get-ready gaps in between */
+function stepsSec(steps, from) { let t = 0; from = from || 0; for (let k = from; k < steps.length; k++) { t += steps[k].sec; if (k > from) t += stepGap(steps, k); } return t; }
+function rotate(arr, k) { if (!arr.length) return arr; k = ((k % arr.length) + arr.length) % arr.length; return arr.slice(k).concat(arr.slice(0, k)); }
+/* moves you can do with your gear, today's sore spots and where you are (trail = standing, nothing needed) */
+function mobPool(p, o) {
+  o = o || {}; const avail = availEquip(p), bad = o.bad || new Set(), ex = o.exclude || new Set();
+  const avoid = new Set(S.mobAvoid || []);
+  return MOB.filter(m => m.needs.every(q => avail.has(q)) && (!o.trail || m.trail) && !m.reg.some(r => bad.has(r)) && !ex.has(m.id) && !avoid.has(m.id));
+}
+/* fill a time budget from category queues, then order the moves so the session flows */
+function fillMoves(queues, pattern, budget, scale, pool) {
+  const chosen = []; let used = -MOB_TRANS, pi = 0, miss = 0;
+  while (miss < pattern.length * 2 && used < budget - 15) {
+    const list = queues[pattern[pi++ % pattern.length]] || [];
+    const m = list.find(x => !chosen.includes(x.id));
+    if (!m) { miss++; continue; }
+    miss = 0;
+    const c = mobCost(m.id, scale);
+    if (used + c > budget + 20) {
+      const alt = pool.find(x => !chosen.includes(x.id) && used + mobCost(x.id, scale) <= budget + 20);
+      if (!alt) break;
+      chosen.push(alt.id); used += mobCost(alt.id, scale); continue;
+    }
+    chosen.push(m.id); used += c;
+  }
+  return chosen.sort((a, b) => MOBMAP[a].ph - MOBMAP[b].ph);
+}
+/* stretch the holds a little if we ran out of new moves before the time was up */
+function fitSteps(steps, budget) {
+  const tot = stepsSec(steps); if (!steps.length || tot >= budget - 30) return steps;
+  const gaps = tot - steps.reduce((n, x) => n + x.sec, 0), sum = tot - gaps;
+  const f = Math.min(2, (budget - gaps) / sum);
+  steps.forEach(x => { x.sec = Math.round(x.sec * f / 5) * 5; });
+  return steps;
+}
+function pickWarm(p, seed, secs, bad) {
+  const pool = mobPool(p, { bad }).filter(m => m.ph <= 1);
+  const q = { roll: rotate(pool.filter(m => m.ph === 0), seed), warm: rotate(pool.filter(m => m.ph === 1), seed * 3) };
+  return fillMoves(q, ['warm', 'warm', 'roll'], secs, 1, pool);
 }
 function cardioModes(p) {
   const avail = availEquip(p);
@@ -596,19 +724,32 @@ function buildCardio(type, p, dayIdx, minutesOverride) {
   phases = phases.filter(ph => ph.sec > 0);
   return { modeId: mode ? mode.id : 'walk', minutes: mins, phases, label, structure: reps ? 'intervals' : 'steady' };
 }
+/* ride days: stretches you can do standing next to your bike on a dirt or rocky trail — no wall, no floor, no all-fours */
+function rideStretches(p, dayIdx, bad) {
+  const pool = mobPool(p, { trail: true, bad });
+  const warmQ = { warm: rotate(pool.filter(m => m.ph === 1), dayIdx * 2) };
+  const coolPool = pool.filter(m => m.ph >= 2);
+  const coolQ = { hold: rotate(coolPool.filter(m => !m.yoga), dayIdx * 2), yoga: rotate(coolPool.filter(m => m.yoga), dayIdx) };
+  const warmMob = fillMoves(warmQ, ['warm'], 300, 1, pool.filter(m => m.ph === 1));
+  const coolMob = fillMoves(coolQ, ['hold', 'yoga', 'hold'], 420, 1, coolPool);
+  return { warmMob, coolMob, warmSteps: mkSteps(warmMob), coolSteps: mkSteps(coolMob) };
+}
 function buildRide(p, dayIdx, minutesOverride) {
   const mins = minutesOverride || p.rideMinutes || 90;
-  const warm = pickMob(3, dayIdx).filter(m => !MOBMAP[m].reg.includes('knee'));
-  const cool = pickMob(4, dayIdx + 2);
-  return { type: 'MTB', title: TYPE_INFO.MTB.title, kind: 'ride',
-    ride: { modeId: 'mtb', minutes: mins },
-    warmMob: warm.length ? warm : ['hipcircles', 'ankle', 'tspine'],
-    coolMob: cool, holdSec: 40 };
+  return Object.assign({ type: 'MTB', title: TYPE_INFO.MTB.title, kind: 'ride', ride: { modeId: 'mtb', minutes: mins } }, rideStretches(p, dayIdx));
 }
-function buildFlex(p, dayIdx) {
-  const n = clamp(Math.floor(p.minutes / 4), 5, 10);
-  const moves = []; for (let i = 0; i < n; i++) moves.push(MOB[(dayIdx * 7 + i * 3) % MOB.length].id);
-  return { type: 'F', title: TYPE_INFO.F.title, kind: 'mobility', moves: moves.filter((m, i, a) => a.indexOf(m) === i), holdSec: p.minutes >= 40 ? 60 : 45, rounds: p.minutes >= 45 ? 2 : 1 };
+function buildFlex(p, dayIdx, bad) {
+  const budget = p.minutes * 60, scale = p.minutes >= 45 ? 1.25 : 1;
+  const pool = mobPool(p, { bad });
+  const q = {
+    roll: rotate(pool.filter(m => m.ph === 0 || m.ph === 4), dayIdx),
+    warm: rotate(pool.filter(m => m.ph === 1 && !m.yoga), dayIdx * 2),
+    yoga: rotate(pool.filter(m => m.yoga), dayIdx * 3),
+    hold: rotate(pool.filter(m => !m.yoga && m.ph >= 2 && m.ph <= 3), dayIdx * 2)
+  };
+  const moves = fillMoves(q, ['warm', 'yoga', 'hold', 'yoga', 'roll', 'warm', 'yoga', 'hold'], budget, scale, pool);
+  const steps = fitSteps(mkSteps(moves, scale), budget);
+  return { type: 'F', title: TYPE_INFO.F.title, kind: 'mobility', moves, steps, minutes: p.minutes, idx: dayIdx };
 }
 function buildOne(code, p, dayIdx, minutes) {
   const pp = minutes ? Object.assign({}, p, { minutes }) : p;
@@ -616,7 +757,7 @@ function buildOne(code, p, dayIdx, minutes) {
   const k = TYPE_INFO[code] ? TYPE_INFO[code].kind : 'strength';
   let s;
   if (k === 'strength') s = buildStrength(code, pp, dayIdx);
-  else if (k === 'cardio') s = { type: code, title: TYPE_INFO[code].title, kind: 'cardio', cardio: buildCardio(code, pp, dayIdx), mobility: pp.goal === 'flex' ? pickMob(3, dayIdx) : [] };
+  else if (k === 'cardio') s = { type: code, title: TYPE_INFO[code].title, kind: 'cardio', cardio: buildCardio(code, pp, dayIdx), mobility: [] };
   else s = buildFlex(pp, dayIdx);
   return s;
 }
@@ -643,7 +784,7 @@ function buildProgram() {
     s.day = d; s.idx = i;
     return s;
   });
-  S.program = { id: uid(), createdAt: todayStr(), week, version: (S.program ? S.program.version + 1 : 1) };
+  S.program = { id: uid(), createdAt: todayStr(), week, fmt: 2, version: (S.program ? S.program.version + 1 : 1) };
   save();
   return S.program;
 }
@@ -673,10 +814,13 @@ function applyInjuries(sess, regions) {
       if (out.cardio.structure === 'intervals') { out.cardio.phases = out.cardio.phases.map(ph => Object.assign({}, ph, { k: 'easy', label: ph.label === 'Warm up' || ph.label === 'Cool down' ? ph.label : 'Steady easy' })); out.cardio.structure = 'steady'; notes.push('Intervals changed to steady'); }
     }
   }
-  if (out.mobility) out.mobility = out.mobility.filter(id => !MOBMAP[id].reg.some(r => bad.has(r)));
-  if (out.moves) out.moves = out.moves.filter(id => !MOBMAP[id].reg.some(r => bad.has(r)));
-  if (out.warmMob) out.warmMob = out.warmMob.filter(id => !MOBMAP[id].reg.some(r => bad.has(r)));
-  if (out.coolMob) out.coolMob = out.coolMob.filter(id => !MOBMAP[id].reg.some(r => bad.has(r)));
+  const sore = id => MOBMAP[id] && MOBMAP[id].reg.some(r => bad.has(r));
+  if (out.mobility && out.mobility.some(sore)) { out.mobility = pickWarm(p, out.idx || 0, (out.warm || 6) * 60, bad); out.warmSteps = mkSteps(out.mobility); }
+  if (out.kind === 'mobility' && (out.moves || []).some(sore)) {
+    const re = buildFlex(Object.assign({}, p, { minutes: out.minutes || p.minutes }), out.idx || 0, bad);
+    out.moves = re.moves; out.steps = re.steps; notes.push('Stretches that load a sore spot were swapped for others');
+  }
+  if (out.kind === 'ride' && (out.warmMob || []).concat(out.coolMob || []).some(sore)) Object.assign(out, rideStretches(p, out.idx || 0, bad));
   if (out.ride) { const m = CARDIOMAP[out.ride.modeId]; if (m && m.reg.some(r => bad.has(r))) notes.push('Keep to smooth trails and stay seated — pick gentle terrain today'); }
   return { sess: out, notes };
 }
@@ -1113,7 +1257,7 @@ function place(p) {
   const anchor = p.anchor || 'feet';
   if (anchor === 'hands') dy = (p.handY != null ? p.handY : 34) - s.han[1];
   else if (anchor === 'py') dy = (p.py != null ? p.py : GROUND - 40);
-  else dy = GROUND - Math.max(s.ank[1], s.ank2[1], s.toe[1], s.toe2[1]);
+  else dy = GROUND - Math.max(s.ank[1], s.ank2[1], s.toe[1], s.toe2[1]) - (p.rise || 0);   // rise: standing on something (a Bosu dome)
   const out = {}; for (const k in s) out[k] = [s[k][0] + dx, s[k][1] + dy];
   if (!p.ik) {
     // older angle-only poses: keep inside the canvas and above the floor
@@ -1417,14 +1561,17 @@ function figSvgStick(s, a) {
   const farLeg = front ? '#cfd4e4' : '#5d6380', farArm = front ? 'var(--acc)' : '#5d6380', near = 'var(--acc)', body = '#cfd4e4';
   return `${groundSvg(s, a)}
     ${sceneSvg(a.scene, s)}
+    ${gearUnder(a, s)}
     ${L(s.pel, s.kne2, 8, farLeg)}${L(s.kne2, s.ank2, 7, farLeg)}${L(s.ank2, s.toe2, 5, farLeg)}
     ${L(s.sho, s.elb2, 7, farArm)}${L(s.elb2, s.han2, 6, farArm)}
     ${propSvg(a.prop, s)}
     ${L(s.pel, s.sho, 12, body)}
+    ${gearTorso(a, s)}
     ${L(s.pel, s.kne, 9, body)}${L(s.kne, s.ank, 8, body)}${L(s.ank, s.toe, 5.5, body)}
     ${L(s.sho, s.elb, 8, near)}${L(s.elb, s.han, 7, near)}
     <circle cx="${s.hed[0].toFixed(1)}" cy="${s.hed[1].toFixed(1)}" r="${LEN.head}" fill="${body}"/>
-    ${front ? faceFront(s) : faceSvg(s)}`;
+    ${front ? faceFront(s) : faceSvg(s)}
+    ${gearOver(a, s, null)}`;
 }
 function faceFront(s) {
   const p = s._p || {}, up = (p.nek != null ? p.nek : p.tor), c = pol(s.hed, up, 1);
@@ -1464,26 +1611,36 @@ function viewBoxFor(a, key) {
 
 const Figure = {
   _items: [], _raf: null,
-  svg(kind, id, size, cls) {
+  /* mirror = true draws the other side of the body (the figure flipped left-to-right) */
+  svg(kind, id, size, cls, mirror) {
     const key = kind + ':' + id;
     const vb = viewBoxFor(animFor(kind, id), key);
-    return `<svg class="figure ${cls || ''}" data-fig="${esc(key)}" viewBox="${vb}" ${size ? `width="${size}" height="${size}"` : ''} aria-hidden="true"></svg>`;
+    return `<svg class="figure ${cls || ''}" data-fig="${esc(key + (mirror ? '|m' : ''))}" viewBox="${vb}" ${size ? `width="${size}" height="${size}"` : ''} aria-hidden="true"></svg>`;
+  },
+  /* a stretch drawn for one side: flips the drawing when the move's animation shows the other side */
+  mob(id, side, size, cls) { const m = MOBMAP[id]; return Figure.svg('mob', id, size, cls, !!(m && m.uni && side && side !== m.side)); },
+  draw(it, s) {
+    const body = figSvg(s, it.a);
+    it.n.innerHTML = it.mx != null ? `<g transform="matrix(-1 0 0 1 ${it.mx} 0)">${body}</g>` : body;
   },
   mountAll() {
     Figure.stop();
     const nodes = $$('[data-fig]');
     if (!nodes.length) return;
     Figure._items = nodes.map(n => {
-      const [kind, id] = n.getAttribute('data-fig').split(':');
+      const [key, flag] = n.getAttribute('data-fig').split('|');
+      const [kind, id] = key.split(':');
       const a = animFor(kind, id);
-      return { n, a, t: Math.random() * 1000 };
+      let mx = null;
+      if (flag === 'm') { const v = (n.getAttribute('viewBox') || '0 0 200 200').split(/\s+/).map(Number); mx = 2 * v[0] + v[2]; }
+      return { n, a, mx, t: Math.random() * 1000 };
     });
     if (S.flags.calm || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
-      Figure._items.forEach(it => { const p = it.a.frames[it.a.frames.length - 1]; it.n.innerHTML = figSvg(place(p), it.a); });
+      Figure._items.forEach(it => { const p = it.a.frames[it.a.frames.length - 1]; Figure.draw(it, place(p)); });
       return;
     }
     // draw a still frame for everything now; only animate what is on screen
-    Figure._items.forEach(it => { it.vis = true; it.n.innerHTML = figSvg(place(it.a.frames[0]), it.a); });
+    Figure._items.forEach(it => { it.vis = true; Figure.draw(it, place(it.a.frames[0])); });
     if (Figure._io) Figure._io.disconnect();
     if ('IntersectionObserver' in window) {
       Figure._items.forEach(it => { it.vis = false; });
@@ -1511,7 +1668,7 @@ const Figure = {
           if (it.prev) { if (s[k][1] >= GROUND - 1.5 && it.prev[k][1] >= GROUND - 1.5) it.v = s[k][0] - it.prev[k][0]; it.g = (it.g || 0) + (it.v || 0); }
           it.prev = s; s._g = it.g || 0;
         }
-        it.n.innerHTML = figSvg(s, it.a);
+        Figure.draw(it, s);
       });
     };
     Figure._raf = requestAnimationFrame(step);
@@ -1778,6 +1935,170 @@ const ANIM_FIX = {
 };
 Object.assign(ANIM, ANIM_FIX);
 EXANIM.floorpr = 'floorPress';
+
+/* =========================================================
+   NEW MOVES — standing stretches, yoga, foam roller, massage gun, Bosu,
+   weighted vest and ankle weights. Same conventions as above:
+   side view faces RIGHT, limb 1 is the near (right) side, limb 2 the far (left) side.
+   In front view, limb 1 is drawn on the screen's right, which is the figure's LEFT.
+   ========================================================= */
+const cp = (k, extra) => Object.assign({}, ANIM[k], { frames: ANIM[k].frames.map(f => Object.assign({}, f)) }, extra || {});
+const STAND_W = { px: 100, py: 112, tor: -90 };
+const STANDING_ON_NEAR = { px: 100, py: 112, tor: -89, F: [102, 176] };
+/* front-view helper: angle-drawn legs, pelvis height set so the lowest foot touches the floor */
+function FV(o) {
+  const q = Object.assign({ ik: true, tor: -90, px: CX, ua: 80, fa: 82, ua2: 100, fa2: 98, th: 86, sh: 88, th2: 94, sh2: 92, ft: 10, ft2: 170 }, o);
+  if (q.py == null) { const s = skeleton(q); q.py = GROUND - Math.max(s.ank[1], s.ank2[1], s.toe[1], s.toe2[1]) - (q.rise || 0); }
+  return q;
+}
+const WAR2 = { th: 39, sh: 39, th2: 165, sh2: 90, ft: 12, ft2: 172, ua: 0, fa: 0, ua2: 180, fa2: 180 };
+Object.assign(ANIM, {
+  /* ---------- standing: fine on a trail ---------- */
+  standQuad: { prop: 'none', hold: true, frames: [
+    W(Object.assign({}, STANDING_ON_NEAR, { th2: 100, sh2: -96, ft2: -70, H2: [93, 112], H: [126, 88] })),
+    W(Object.assign({}, STANDING_ON_NEAR, { tor: -87, th2: 102, sh2: -97, ft2: -72, H2: [92, 111], H: [127, 90] }))] },
+  standCalf: { prop: 'none', hold: true, frames: [
+    W({ px: 96, py: 119, tor: -68, H: [116, 142], H2: [113, 143], F: [120, 176], F2: [60, 176] }),
+    W({ px: 99, py: 120, tor: -64, H: [117, 143], H2: [114, 144], F: [120, 176], F2: [60, 176] })] },
+  hipFlexStand: { prop: 'none', hold: true, frames: [
+    W({ px: 98, py: 128, tor: -92, nek: -98, F: [124, 176], T2: [62, 176], ft2: 40, H: [100, 42] }),
+    W({ px: 100, py: 130, tor: -94, nek: -100, F: [124, 176], T2: [62, 176], ft2: 40, H: [99, 44] })] },
+  legSwing: { prop: 'none', speed: 900, frames: [
+    W(Object.assign({}, STANDING_ON_NEAR, { th2: 44, sh2: 46, ft2: -40, H: [132, 96], ua2: 110, fa2: 100 })),
+    W(Object.assign({}, STANDING_ON_NEAR, { tor: -86, th2: 132, sh2: 128, ft2: 50, H: [132, 96], ua2: 70, fa2: 80 }))] },
+  legSwingSide: { view: 'front', prop: 'none', speed: 850, frames: [
+    FV({ th: 90, sh: 90, th2: 128, sh2: 128, ft2: 150, ua: 20, fa: 30, ua2: 150, fa2: 140 }),
+    FV({ th: 90, sh: 90, th2: 70, sh2: 72, ft2: 170, ua: 20, fa: 30, ua2: 150, fa2: 140 })] },
+  standFig4: { prop: 'none', hold: true, frames: [
+    W({ px: 92, py: 126, tor: -62, nek: -80, F: [106, 176], F2: [118, 146], ft2: -6, H: [128, 100], H2: [125, 101] }),
+    W({ px: 90, py: 128, tor: -58, nek: -76, F: [106, 176], F2: [118, 147], ft2: -6, H: [128, 102], H2: [125, 103] })] },
+  trunkTwist: { view: 'front', prop: 'none', speed: 800, frames: [
+    FV({ th: 84, sh: 86, th2: 96, sh2: 94, ua: 12, fa: 4, ua2: 24, fa2: -24 }),
+    FV({ th: 84, sh: 86, th2: 96, sh2: 94, ua: 156, fa: -156, ua2: 168, fa2: 176 })] },
+  sideBend: { view: 'front', prop: 'none', speed: 1100, frames: [
+    FV({ tor: -74, th: 84, sh: 86, th2: 96, sh2: 94, ua: 84, fa: 86, ua2: -118, fa2: -64 }),
+    FV({ tor: -106, th: 84, sh: 86, th2: 96, sh2: 94, ua: -62, fa: -116, ua2: 96, fa2: 94 })] },
+  wristStretch: { prop: 'none', hold: true, frames: [
+    W(Object.assign({}, STAND_W, { H: [147, 76], H2: [143, 80], F: [102, 176], F2: [98, 176] })),
+    W(Object.assign({}, STAND_W, { H: [147, 77], H2: [142, 82], F: [102, 176], F2: [98, 176] }))] },
+  chestOpen: { prop: 'none', hold: true, frames: [
+    W(Object.assign({}, STAND_W, { nek: -96, H: [80, 114], H2: [82, 115], F: [102, 176], F2: [98, 176] })),
+    W(Object.assign({}, STAND_W, { tor: -92, nek: -102, H: [76, 108], H2: [78, 109], F: [102, 176], F2: [98, 176] }))] },
+  armCross: { view: 'front', prop: 'none', hold: true, frames: [
+    FV({ ua: 176, fa: 180, ua2: 64, fa2: -58 }),
+    FV({ ua: 178, fa: 182, ua2: 62, fa2: -60 })] },
+  ankleCircle: { prop: 'none', speed: 520, frames: [
+    W(Object.assign({}, STANDING_ON_NEAR, { th2: 45, sh2: 75, ft2: -40, ua2: 110, fa2: 100, H: [124, 104] })),
+    W(Object.assign({}, STANDING_ON_NEAR, { th2: 45, sh2: 75, ft2: 5, ua2: 110, fa2: 100, H: [124, 104] })),
+    W(Object.assign({}, STANDING_ON_NEAR, { th2: 45, sh2: 75, ft2: 45, ua2: 110, fa2: 100, H: [124, 104] })),
+    W(Object.assign({}, STANDING_ON_NEAR, { th2: 45, sh2: 75, ft2: 5, ua2: 110, fa2: 100, H: [124, 104] }))] },
+  /* ---------- yoga ---------- */
+  forwardFold: { prop: 'none', hold: true, frames: [
+    W({ px: 84, py: 117, tor: 46, nek: 70, H: [124, 172], H2: [121, 173], F: [102, 176], F2: [98, 176] }),
+    W({ px: 84, py: 117, tor: 50, nek: 74, H: [123, 174], H2: [120, 175], F: [102, 176], F2: [98, 176] })] },
+  sunSal: { prop: 'none', speed: 1300, frames: [
+    W({ px: 100, py: 112, tor: -92, nek: -104, H: [98, 28], H2: [95, 29], F: [102, 176], F2: [98, 176] }),
+    W({ px: 84, py: 117, tor: 48, nek: 72, H: [124, 173], H2: [121, 174], F: [102, 176], F2: [98, 176] }),
+    W({ px: 88, py: 114, tor: -6, nek: -16, H: [112, 150], H2: [109, 151], F: [102, 176], F2: [98, 176] }),
+    W({ px: 84, py: 117, tor: 48, nek: 72, H: [124, 173], H2: [121, 174], F: [102, 176], F2: [98, 176] })] },
+  chairFold: { prop: 'none', speed: 1500, frames: [
+    W({ px: 86, py: 134, tor: -60, nek: -66, H: [128, 56], H2: [125, 57], F: [106, 176], F2: [102, 176] }),
+    W({ px: 88, py: 117, tor: 48, nek: 72, H: [128, 173], H2: [125, 174], F: [106, 176], F2: [102, 176] })] },
+  upDog: { prop: 'none', hold: true, frames: [
+    W({ px: 128, py: 156, tor: -45, nek: -72, H: [158, 174], H2: [155, 174], F: [66, 168], F2: [63, 169], ft: 176, ft2: 176 }),
+    W({ px: 127, py: 155, tor: -47, nek: -76, H: [158, 174], H2: [155, 174], F: [66, 168], F2: [63, 169], ft: 176, ft2: 176 })] },
+  dogFlow: { prop: 'none', speed: 1500, frames: [
+    W({ px: 100, py: 112, tor: 48, nek: 58, H: [158, 174], H2: [155, 174], F: [69, 165], F2: [66, 165], ft: 60, ft2: 60 }),
+    W({ px: 117, py: 144, tor: -14, nek: -4, H: [158, 174], H2: [155, 174], F: [58, 165], F2: [55, 165], ft: 60, ft2: 60 }),
+    W({ px: 128, py: 156, tor: -45, nek: -72, H: [158, 174], H2: [155, 174], F: [66, 168], F2: [63, 169], ft: 176, ft2: 176 })] },
+  warrior1: { prop: 'none', hold: true, frames: [
+    W({ px: 100, py: 145, tor: -88, nek: -100, F: [136, 176], F2: [46, 176], ft2: -20, H: [104, 56], H2: [101, 57] }),
+    W({ px: 100, py: 147, tor: -89, nek: -102, F: [136, 176], F2: [46, 176], ft2: -20, H: [104, 58], H2: [101, 59] })] },
+  warrior2: { view: 'front', prop: 'none', hold: true, spread: 7, frames: [FV(WAR2), FV(Object.assign({}, WAR2, { ua: 2, fa: 2, ua2: 178, fa2: 178 }))] },
+  revWarrior: { view: 'front', prop: 'none', speed: 1500, spread: 7, frames: [
+    FV(WAR2),
+    FV(Object.assign({}, WAR2, { tor: -68, ua: 70, fa: 74, ua2: -86, fa2: -60 }))] },
+  triangle: { view: 'front', prop: 'none', hold: true, spread: 7, frames: [
+    FV({ tor: -152, nek: -140, th: 56, sh: 56, th2: 124, sh2: 124, ft: 12, ft2: 172, ua: -86, fa: -88, ua2: 96, fa2: 94 }),
+    FV({ tor: -150, nek: -136, th: 56, sh: 56, th2: 124, sh2: 124, ft: 12, ft2: 172, ua: -88, fa: -90, ua2: 94, fa2: 92 })] },
+  lowLunge: { prop: 'none', hold: true, frames: [
+    W({ px: 96, py: 139, tor: -84, nek: -98, F: [130, 176], th2: 105, sh2: 180, ft2: 180, H: [104, 52], H2: [101, 53] }),
+    W({ px: 99, py: 140, tor: -86, nek: -100, F: [130, 176], th2: 110, sh2: 180, ft2: 180, H: [106, 53], H2: [103, 54] })] },
+  tree: { view: 'front', prop: 'none', hold: true, frames: [
+    FV({ th: 90, sh: 90, ft: 10, th2: 150, sh2: 20, ft2: 60, ua: -70, fa: -135, ua2: -110, fa2: -45 }),
+    FV({ th: 90, sh: 90, ft: 10, th2: 152, sh2: 22, ft2: 60, ua: -71, fa: -134, ua2: -109, fa2: -46 })] },
+  /* ---------- foam roller ---------- */
+  rollCalf: { prop: 'none', roller: [120, 168.5], speed: 1400, frames: [
+    W({ px: 70, py: 160, tor: -120, nek: -70, H: [44, 174], H2: [47, 174], F: [134, 162], F2: [131, 155], ft: -70, ft2: -70 }),
+    W({ px: 82, py: 160, tor: -120, nek: -70, H: [56, 174], H2: [59, 174], F: [146, 162], F2: [143, 155], ft: -70, ft2: -70 })] },
+  rollHam: { prop: 'none', roller: [98, 168.5], speed: 1400, frames: [
+    W({ px: 70, py: 159, tor: -118, nek: -70, H: [44, 174], H2: [47, 174], F: [134, 163], F2: [131, 156], ft: -70, ft2: -70 }),
+    W({ px: 88, py: 159, tor: -118, nek: -70, H: [62, 174], H2: [65, 174], F: [152, 163], F2: [149, 156], ft: -70, ft2: -70 })] },
+  rollQuad: { prop: 'none', roller: [76, 168.5], speed: 1400, frames: [
+    W({ px: 104, py: 159, tor: -16, nek: 6, H: [160, 174], H2: [157, 174], F: [42, 164], F2: [40, 171], ft: 150, ft2: 170 }),
+    W({ px: 86, py: 159, tor: -16, nek: 6, H: [142, 174], H2: [139, 174], F: [24, 164], F2: [22, 171], ft: 150, ft2: 170 })] },
+  rollGlute: { prop: 'none', roller: [96, 168.5], speed: 1400, frames: [
+    W({ px: 92, py: 158, tor: -110, nek: -84, H: [76, 170], H2: [79, 170], F: [134, 176], F2: [121, 139], ft2: -10 }),
+    W({ px: 100, py: 158, tor: -110, nek: -84, H: [84, 170], H2: [87, 170], F: [134, 176], F2: [123, 139], ft2: -10 })] },
+  rollBack: { prop: 'none', roller: [72, 168.5], speed: 1500, frames: [
+    W({ px: 108, py: 153, tor: 171, nek: 176, H: [48, 146], H2: [50, 148], F: [144, 176], F2: [140, 176] }),
+    W({ px: 98, py: 155, tor: 173, nek: 178, H: [38, 150], H2: [40, 152], F: [144, 176], F2: [140, 176] })] },
+  /* ---------- massage gun ---------- */
+  gunQuad: { prop: 'none', over: 'gun', speed: 900, frames: [
+    W({ px: 80, py: 166, tor: -80, nek: -40, H: [98, 146], H2: [74, 172], F: [144, 170], F2: [141, 171], ft: -80, ft2: -80, gunA: 90 }),
+    W({ px: 80, py: 166, tor: -76, nek: -30, H: [112, 148], H2: [74, 172], F: [144, 170], F2: [141, 171], ft: -80, ft2: -80, gunA: 90 })] },
+  gunCalf: { prop: 'none', over: 'gun', speed: 900, frames: [
+    W({ px: 78, py: 166, tor: -72, nek: -30, H: [106, 166], H2: [72, 172], F: [128, 176], F2: [140, 171], ft2: -80, gunA: 10 }),
+    W({ px: 78, py: 166, tor: -68, nek: -26, H: [114, 170], H2: [72, 172], F: [128, 176], F2: [140, 171], ft2: -80, gunA: 0 })] },
+  gunFore: { prop: 'none', over: 'gun', speed: 900, frames: [
+    W(Object.assign({}, STAND_W, { nek: -60, ua: 80, fa: -6, H2s: [22, 9], gunH: 2, gunA: 90, F: [102, 176], F2: [98, 176] })),
+    W(Object.assign({}, STAND_W, { nek: -60, ua: 80, fa: -6, H2s: [36, 12], gunH: 2, gunA: 90, F: [102, 176], F2: [98, 176] }))] },
+  gunTrap: { view: 'front', prop: 'none', over: 'gun', speed: 900, frames: [
+    FV({ ua: 118, fa: -100, ua2: 100, fa2: 98, gunA: 70 }),
+    FV({ ua: 112, fa: -96, ua2: 100, fa2: 98, gunA: 80 })] },
+  /* ---------- Bosu ---------- */
+  bosuBalance: { prop: 'none', dome: 'foot', hold: true, frames: [
+    W({ px: 102, py: 98, tor: -90, F: [104, 162], th2: 2, sh2: 92, ft2: 8, ua: 30, fa: 14, ua2: 150, fa2: 166 }),
+    W({ px: 101, py: 98, tor: -88, F: [104, 162], th2: 4, sh2: 94, ft2: 8, ua: 36, fa: 20, ua2: 144, fa2: 160 })] },
+  bosuPush: { prop: 'none', dome: 'hands', frames: [
+    W({ px: 99, py: 140, tor: -30, H: [134, 161], H2: [131, 161], F: [42, 165], F2: [42.5, 166], ft: 60, ft2: 60 }),
+    W({ px: 104, py: 152, tor: -14, H: [134, 161], H2: [131, 161], F: [42, 165], F2: [42.5, 166], ft: 60, ft2: 60 })] },
+  bosuPlank: { prop: 'none', dome: 'hands', hold: true, frames: [
+    W({ px: 99, py: 140, tor: -30, H: [134, 161], H2: [131, 161], F: [42, 165], F2: [42.5, 166], ft: 60, ft2: 60 }),
+    W({ px: 99, py: 139, tor: -31, H: [134, 161], H2: [131, 161], F: [42, 165], F2: [42.5, 166], ft: 60, ft2: 60 })] },
+  bosuSplit: { prop: 'none', dome: 'foot', frames: [
+    W({ px: 90, py: 110, tor: -88, F: [116, 162], T2: [66, 176], ft2: 30 }),
+    W({ px: 88, py: 134, tor: -88, F: [116, 162], T2: [66, 176], ft2: 55 })] },
+  bosuBridge: { prop: 'none', dome: 140, frames: [
+    W({ px: 98, py: 165, tor: 180, nek: 180, ua: 2, fa: 1, ua2: 4, fa2: 3, F: [140, 161], F2: [136, 161] }),
+    W({ px: 94, py: 143, tor: 148, nek: 180, ua: 0, fa: 0, ua2: 2, fa2: 2, F: [140, 161], F2: [136, 161] })] },
+  /* ---------- ankle weights ---------- */
+  ankKick: { prop: 'none', over: 'cuffs', frames: [
+    W(ALL_FOURS),
+    W(Object.assign({}, ALL_FOURS, { F2: [22, 128], ft2: 176 }))] },
+  ankLegRaise: { prop: 'none', over: 'cuffs', frames: [
+    W(Object.assign({}, LYING_UP, { ua: 2, fa: 1, ua2: 4, fa2: 3, F: [106, 102], F2: [102, 103], ft: -110, ft2: -110 })),
+    W(Object.assign({}, LYING_UP, { ua: 2, fa: 1, ua2: 4, fa2: 3, F: [164, 160], F2: [161, 161], ft: -60, ft2: -60 }))] },
+  ankSide: { view: 'front', prop: 'none', over: 'cuffs', frames: [
+    FV({ th: 90, sh: 90, th2: 92, sh2: 92, ft2: 170, ua: 50, fa: 140, ua2: 130, fa2: 40 }),
+    FV({ th: 90, sh: 90, th2: 128, sh2: 128, ft2: 160, ua: 50, fa: 140, ua2: 130, fa2: 40 })] }
+});
+/* weighted-vest and Bosu versions of existing moves */
+ANIM.squatVest = cp('squat', { over: 'vest' });
+ANIM.pushVest = cp('pushup', { over: 'vest' });
+ANIM.lungeVest = cp('lunge', { over: 'vest' });
+ANIM.pullVest = cp('pullup', { over: 'vest' });
+ANIM.walkVest = cp('walk', { over: 'vest' });
+ANIM.squatBosu = { prop: 'none', dome: 'feet', frames: ANIM.squat.frames.map(f => Object.assign({}, f, { rise: 13 })) };
+Object.assign(EXANIM, { vestsq: 'squatVest', vestpu: 'pushVest', vestlunge: 'lungeVest', vestpull: 'pullVest', vestmarch: 'walkVest',
+  bosusq: 'squatBosu', bosupu: 'bosuPush', bosusplit: 'bosuSplit', bosubridge: 'bosuBridge', bosuplank: 'bosuPlank',
+  ankkick: 'ankKick', anklegr: 'ankLegRaise', ankabd: 'ankSide' });
+Object.assign(MOBANIM, { legswing: 'legSwing', legswingside: 'legSwingSide', standquad: 'standQuad', standcalf: 'standCalf', hipflex: 'hipFlexStand',
+  fig4: 'standFig4', trunk: 'trunkTwist', sidebend: 'sideBend', wrist: 'wristStretch', chest: 'chestOpen', armcross: 'armCross', ankcirc: 'ankleCircle',
+  fold: 'forwardFold', sunsal: 'sunSal', dogflow: 'dogFlow', updog: 'upDog', warrior1: 'warrior1', warrior2: 'warrior2', revwar: 'revWarrior',
+  triangle: 'triangle', lowlunge: 'lowLunge', chairfold: 'chairFold', tree: 'tree',
+  rollcalf: 'rollCalf', rollham: 'rollHam', rollquad: 'rollQuad', rollglute: 'rollGlute', rollback: 'rollBack',
+  gunquad: 'gunQuad', guncalf: 'gunCalf', gunfore: 'gunFore', guntrap: 'gunTrap', bosubal: 'bosuBalance' });
 
 /* pre-solve every IK keyframe so angles exist even where a limb is only pinned in one frame */
 Object.values(ANIM).forEach(a => a.frames.forEach(f => {
@@ -2057,14 +2378,59 @@ function figSvgInk(s, a) {
   const far = front ? C : D;
   return `${groundSvg(s, a)}
     ${sceneSvg(a.scene, s)}
+    ${gearUnder(a, s)}
     ${inkLeg(legF[0], legF[1], legF[2], legF[3], p.ft2 != null ? p.ft2 : 0, far, L)}
     ${inkArm(armF[0], armF[1], armF[2], far)}
     ${propSvg(a.prop, s)}
     ${inkNeck(s, front, C)}
     ${inkTorso(s, L, front, C)}
+    ${gearTorso(a, s)}
     ${inkHead(s, L, front, C)}
     ${inkLeg(legN[0], legN[1], legN[2], legN[3], p.ft != null ? p.ft : 0, C, L)}
-    ${inkArm(armN[0], armN[1], armN[2], C)}`;
+    ${inkArm(armN[0], armN[1], armN[2], C)}
+    ${gearOver(a, s, front ? { sh, hp } : null)}`;
+}
+/* ---------- extra gear: foam roller, Bosu dome, weighted vest, ankle weights, massage gun ---------- */
+function gearUnder(a, s) {
+  let out = '';
+  if (a.roller) { const [x, y] = a.roller; out += `<circle cx="${x}" cy="${y}" r="7.5" fill="#6a7089"/><circle cx="${x}" cy="${y}" r="7.5" fill="none" stroke="#8c93ab" stroke-width="1.5"/><circle cx="${x}" cy="${y}" r="2.2" fill="#3a4058"/>`; }
+  if (a.dome) {
+    let cx;
+    if (a.dome === 'hands') cx = (s.han[0] + s.han2[0]) / 2;
+    else if (a.dome === 'foot') cx = (s.ank[0] + s.toe[0]) / 2;
+    else if (typeof a.dome === 'number') cx = a.dome;
+    else cx = (s.ank[0] + s.ank2[0] + s.toe[0] + s.toe2[0]) / 4;
+    const w = 24, top = GROUND - 14;
+    out += a.dome === 'hands'
+      ? `<path d="M${(cx - w).toFixed(1)} ${top} L${(cx + w).toFixed(1)} ${top} Q${cx.toFixed(1)} ${GROUND + 12} ${(cx - w).toFixed(1)} ${top}Z" fill="#3a4058" stroke="#8c93ab" stroke-width="1.5"/><rect x="${(cx - w - 1).toFixed(1)}" y="${top - 3}" width="${w * 2 + 2}" height="4" rx="2" fill="#6a7089"/>`
+      : `<path d="M${(cx - w).toFixed(1)} ${GROUND} Q${cx.toFixed(1)} ${top - 14} ${(cx + w).toFixed(1)} ${GROUND}Z" fill="#3a4058" stroke="#8c93ab" stroke-width="1.5"/><rect x="${(cx - w - 1).toFixed(1)}" y="${GROUND - 3}" width="${w * 2 + 2}" height="4" rx="2" fill="#6a7089"/>`;
+  }
+  return out;
+}
+function gearTorso(a, s) {
+  if (a.over !== 'vest' && a.over2 !== 'vest') return '';
+  const p = s._p || {}, t = p.tor != null ? p.tor : -90, b = pol(s.pel, t, 13), e = pol(s.pel, t, 35);
+  return `<line x1="${b[0].toFixed(1)}" y1="${b[1].toFixed(1)}" x2="${e[0].toFixed(1)}" y2="${e[1].toFixed(1)}" stroke="#2c3148" stroke-width="${a.view === 'front' ? 19 : 15}" stroke-linecap="round" opacity=".95"/>` +
+    [0.3, 0.55, 0.8].map(k => { const c = pol(s.pel, t, 13 + 22 * k), l = pol(c, t + 90, 6), r = pol(c, t - 90, 6); return `<line x1="${l[0].toFixed(1)}" y1="${l[1].toFixed(1)}" x2="${r[0].toFixed(1)}" y2="${r[1].toFixed(1)}" stroke="#6a7089" stroke-width="2.2" stroke-linecap="round"/>`; }).join('');
+}
+function gearOver(a, s, shift) {
+  let out = '';
+  const p = s._p || {};
+  if (a.over === 'cuffs' || a.over2 === 'cuffs') {
+    const cuff = (q) => `<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="4.2" fill="#2c3148" stroke="#8c93ab" stroke-width="1.3"/>`;
+    let a1 = pol(s.kne, Math.atan2(s.ank[1] - s.kne[1], s.ank[0] - s.kne[0]) * DEG, 27), a2 = pol(s.kne2, Math.atan2(s.ank2[1] - s.kne2[1], s.ank2[0] - s.kne2[0]) * DEG, 27);
+    if (shift) { a1 = [a1[0] + shift.hp[0], a1[1] + shift.hp[1]]; a2 = [a2[0] - shift.hp[0], a2[1] - shift.hp[1]]; }
+    out += cuff(a2) + cuff(a1);
+  }
+  if (a.over === 'gun') {
+    let hq = p.gunH === 2 ? s.han2 : s.han; const g = p.gunA != null ? p.gunA : 90;
+    if (shift) { const k = p.gunH === 2 ? -1 : 1; hq = [hq[0] + shift.sh[0] * k, hq[1] + shift.sh[1] * k]; }
+    const b0 = pol(hq, g, -3), b1 = pol(hq, g, 8), hd = pol(hq, g, 11), hl = pol(hq, g - 90, 7);
+    out += `<line x1="${hq[0].toFixed(1)}" y1="${hq[1].toFixed(1)}" x2="${hl[0].toFixed(1)}" y2="${hl[1].toFixed(1)}" stroke="#3a4058" stroke-width="4" stroke-linecap="round"/>` +
+      `<line x1="${b0[0].toFixed(1)}" y1="${b0[1].toFixed(1)}" x2="${b1[0].toFixed(1)}" y2="${b1[1].toFixed(1)}" stroke="#6a7089" stroke-width="7" stroke-linecap="round"/>` +
+      `<circle cx="${hd[0].toFixed(1)}" cy="${hd[1].toFixed(1)}" r="3.4" fill="var(--acc)"/>`;
+  }
+  return out;
 }
 /* =========================================================
    HEART RATE — zones, live BLE feed, manual fallback
@@ -2188,7 +2554,7 @@ function route() {
   // already set up: never show the setup questions again, even if the app was saved to the home screen mid-setup
   if (S.profile && hsh.startsWith('#/onboard') && Onboard.steps[OB.step] !== 'done') { OB.step = 0; location.replace('#/today'); return; }
   const pg = hsh.split('/')[1], A0 = S.active;
-  const viewKey = hsh + '|' + (pg === 'onboard' ? OB.step : pg === 'session' && A0 ? A0.stage + (A0.ridePart || '') + (A0.calibQ ? A0.calibQ.length : '') : '');
+  const viewKey = hsh + '|' + (pg === 'onboard' ? OB.step : pg === 'session' && A0 ? A0.stage + (A0.ridePart || '') + (A0.strWarm ? 'w' : '') + (A0.calibQ ? A0.calibQ.length : '') : '');
   const samePage = route._hash === hsh, keepY = route._key === viewKey ? window.scrollY : 0;
   route._key = viewKey;
   const leaving = route._hash && route._hash.split('/')[1];
@@ -2345,7 +2711,7 @@ const Today = {
     const nx = nextPlan();
     let hero;
     if (doneToday) hero = h`<div class="card hero glow"><div class="heroArt">${Art.rocket(false)}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>Done. ${esc(doneToday.title)}</h2><div class="mute small">${doneToday.minutes} min · ~${doneToday.calories} kcal${doneToday.synced ? ' · in Apple Health' : ''}</div>${!doneToday.synced ? `<div class="mt"><button class="sm" onclick="Session.syncHealth('${doneToday.id}')">Save to Apple Health<span style="display:block;font-size:.78em;font-weight:500;opacity:.8;margin-top:2px">Skip if your watch logged it</span></button></div>` : ''}</div></div>`;
-    else if (plan) hero = h`<div class="card hero glow"><div class="heroArt">${Art.hero(plan.kind)}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>${esc(plan.title)}</h2><div class="mute small">${plan.kind === 'strength' ? plan.exercises.length + ' exercises' : plan.kind === 'cardio' ? CARDIOMAP[plan.cardio.modeId].n + ' · ' + plan.cardio.structure : plan.kind === 'ride' ? 'Mountain bike, plus stretching' : (plan.moves || []).length + ' moves'} · about ${fmtMins(plan.kind === 'ride' ? plan.ride.minutes : p.minutes)}</div><div class="mt"><button onclick="Session.start(${plan.idx})">Start session</button></div></div></div>`;
+    else if (plan) hero = h`<div class="card hero glow"><div class="heroArt">${Art.hero(plan.kind)}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>${esc(plan.title)}</h2><div class="mute small">${plan.kind === 'strength' ? plan.exercises.length + ' exercises' : plan.kind === 'cardio' ? CARDIOMAP[plan.cardio.modeId].n + ' · ' + plan.cardio.structure : plan.kind === 'ride' ? 'Mountain bike, plus stretching' : (plan.moves || []).length + ' moves'} · about ${fmtMins(plan.kind === 'ride' ? plan.ride.minutes : plan.kind === 'mobility' && plan.steps ? Math.max(1, Math.round(stepsSec(plan.steps) / 60)) : p.minutes)}</div><div class="mt"><button onclick="Session.start(${plan.idx})">Start session</button></div></div></div>`;
     else hero = h`<div class="card hero"><div class="heroArt">${Art.hero('rest')}</div><div class="heroBody"><div class="eyebrow">Today</div><h2>Rest day</h2><div class="mute small">${nx ? 'Next up: ' + esc(nx.w.title) + ' ' + (nx.inDays === 1 ? 'tomorrow' : 'in ' + nx.inDays + ' days') : ''}</div><div class="mt row"><button class="sm sec" onclick="Session.pickAny()">Train anyway</button></div></div></div>`;
     const swapLine = (plan && !doneToday) ? h`<div class="row" style="justify-content:center"><button class="sm ghost" style="width:auto" onclick="Session.start(${plan.idx});setTimeout(Session.pickType,60)">Not today — do something else</button></div>` : '';
     const rl = r ? r.level : null;
@@ -2418,9 +2784,14 @@ const Plan = {
     let body = '';
     if (w.kind === 'strength') body = `<div class="list">${w.exercises.map((e, i) => { const ex = EXMAP[e.exId]; const t = targetFor(e); return `<div class="item"><div class="figthumb">${Figure.svg('ex', ex.id)}</div><div class="grow"><div class="title">${esc(ex.n)}</div><div class="sub">${e.sets} × ${e.lo}–${e.hi}${t.weight != null ? ' · ' + fmtW(t.weight) : ex.bwOnly ? ' · bodyweight' : ' · pick a weight'}</div></div><button class="icon" onclick="Plan.swap(${idx},${i})">Swap</button></div>`; }).join('')}</div>${w.cardio ? `<div class="mt small mute">Finisher: ${CARDIOMAP[w.cardio.modeId].n}, ${w.cardio.minutes} min</div>` : ''}${w.mobility && w.mobility.length ? `<div class="mt small mute">Warm-up mobility: ${w.mobility.map(m => MOBMAP[m].n).join(', ')}</div>` : ''}`;
     else if (w.kind === 'cardio') body = `<div class="figbox mb">${Figure.svg('cardio', w.cardio.modeId)}</div><div class="card2"><b>${CARDIOMAP[w.cardio.modeId].n}</b><div class="mute small">${esc(w.cardio.label)}</div><div class="mt list">${w.cardio.phases.map(ph => `<div class="item"><div class="tag ${ph.k === 'hard' ? 'hot' : ''}">${ph.k}</div><div class="grow">${esc(ph.label)}</div><div class="num mute">${Math.floor(ph.sec / 60)}:${String(ph.sec % 60).padStart(2, '0')}</div></div>`).join('')}</div></div>`;
-    else if (w.kind === 'ride') body = `<div class="figbox mb">${Figure.svg('cardio', 'mtb')}</div><div class="card2"><b>Mountain bike · about ${fmtMins(w.ride.minutes)}</b><div class="mute small">Stretch before and after. The trail sets the effort.</div></div><div class="mute small mt">Before: ${(w.warmMob || []).map(m => esc(MOBMAP[m].n)).join(', ')}</div><div class="mute small">After: ${(w.coolMob || []).map(m => esc(MOBMAP[m].n)).join(', ')}</div>`;
-    else body = `<div class="list">${(w.moves || []).map(m => `<div class="item"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div><div class="sub">${esc(MOBMAP[m].cue)}</div></div><div class="num mute">${w.holdSec}s</div></div>`).join('')}</div><div class="mute small mt">${w.rounds} round${w.rounds > 1 ? 's' : ''}</div>`;
+    else if (w.kind === 'ride') body = `<div class="figbox mb">${Figure.svg('cardio', 'mtb')}</div><div class="card2"><b>Mountain bike · about ${fmtMins(w.ride.minutes)}</b><div class="mute small">Stretch before and after — all standing, so they work on a dirt or rocky trail. The trail sets the effort.</div></div>
+      <h3 class="mt2 mb">Before · about ${fmtMins(Math.max(1, Math.round(stepsSec(w.warmSteps || mkSteps(w.warmMob)) / 60)))}</h3>${Plan.moveList(w.warmMob)}<h3 class="mt2 mb">After · about ${fmtMins(Math.max(1, Math.round(stepsSec(w.coolSteps || mkSteps(w.coolMob)) / 60)))}</h3>${Plan.moveList(w.coolMob)}`;
+    else body = `<div class="mute small mb">About ${fmtMins(Math.max(1, Math.round(stepsSec(w.steps || mkSteps(w.moves)) / 60)))} in total, including a few seconds to get ready between moves. One-sided moves are done left, then right.</div>${Plan.moveList(w.moves, w.steps)}`;
     sheet(`<h3>${esc(w.title)} · ${DAYSL[w.day]}</h3><div class="mt">${body}</div><div class="stack mt2"><button onclick="closeSheet();Session.start(${idx})">Start this session</button><button class="ghost" onclick="closeSheet()">Close</button></div>`);
+  },
+  moveList(ids, steps) {
+    const secOf = id => { const st = (steps || []).find(x => x.id === id); return st ? st.sec : mobSec(MOBMAP[id]); };
+    return `<div class="list">${(ids || []).filter(id => MOBMAP[id]).map(id => { const m = MOBMAP[id]; return `<div class="item" onclick="Library.showMob('${id}')"><div class="figthumb">${Figure.svg('mob', id)}</div><div class="grow"><div class="title">${esc(m.n)}</div><div class="sub">${esc(modeInfo(m).t)} · ${shortTime(secOf(id))}${m.uni ? ' each side' : ''}</div></div></div>`; }).join('')}</div>`;
   },
   swap(idx, slot) {
     const w = S.program.week[idx]; const e = w.exercises[slot]; const ex = EXMAP[e.exId];
@@ -2491,7 +2862,7 @@ const Session = {
     if (a.stage === 'done') return Session.rDone(a);
     return '';
   },
-  mount() { const a = S.active; if (!a) return; if (a.stage === 'work' && a.sess.kind === 'cardio' || a.stage === 'tail') Session.tickStart(); if (a.stage === 'work' && a.sess.kind === 'ride') Session.rideTick(); },
+  mount() { const a = S.active; if (!a) return; if (a.stage === 'work' && a.sess.kind === 'cardio' || a.stage === 'tail') Session.tickStart(); if (a.stage === 'work' && a.sess.kind === 'ride') Session.rideTick(); if (a.stage === 'work') { Player.paint(); if (a.sess.kind === 'strength' && !a.strWarm) Rest.paint(a); } },
 
   /* ----- pre-check ----- */
   rPre(a) {
@@ -2500,7 +2871,7 @@ const Session = {
     const opts = isRide ? [45, 60, 90, 120, 180] : [15, 20, 30, 45, 60, 75];
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><h2>${esc(a.base.title)}</h2><span></span></div>
       <div class="card"><div class="between"><div><div class="eyebrow">Today's session</div><h3>${esc(a.base.title)}</h3></div><button class="sm sec" style="width:auto" onclick="Session.pickType()">Change</button></div>
-        <div class="mute small mt">${isRide ? 'Ride plus stretching. No lifting today — the ride is the session.' : a.base.kind === 'cardio' ? CARDIOMAP[a.base.cardio.modeId].n : a.base.kind === 'mobility' ? a.base.moves.length + ' moves' : a.base.exercises.length + ' exercises'}</div></div>
+        <div class="mute small mt">${isRide ? 'Ride plus stretching. No lifting today — the ride is the session.' : a.base.kind === 'cardio' ? CARDIOMAP[a.base.cardio.modeId].n : a.base.kind === 'mobility' ? a.base.moves.length + ' moves · about ' + fmtMins(Math.max(1, Math.round(stepsSec(a.base.steps || []) / 60))) + ' · one-sided moves done left, then right' : a.base.exercises.length + ' exercises'}</div></div>
       <div class="card mt"><h3>How long have you got${isRide ? ' to ride' : ''}?</h3><p class="mute small">${isRide ? 'Rough is fine — the timer just counts up and you finish when you finish.' : 'The session is built to fit. Shorter means fewer exercises, not rushed ones.'}</p>
         <div class="chips mt">${opts.map(m => `<span class="chip ${a.minutes === m ? 'on' : ''}" onclick="Session.setMinutes(${m})">${fmtMins(m)}</span>`).join('')}</div></div>
       <div class="card mt"><h3>Anything sore or injured?</h3><p class="mute small">Tap any area that hurts. ${isRide ? 'You will get terrain advice instead of exercise swaps.' : 'Exercises that load it get swapped for safer ones.'}</p>
@@ -2532,6 +2903,7 @@ const Session = {
     a.stage = a.calibQ.length ? 'calib' : 'work';
     a.startedAt = Date.now();
     a.phaseIdx = 0; a.phaseLeft = null; a.paused = false; a.mobIdx = 0; a.rideSec = 0; a.ridePart = 'warm'; a.hrAsk = 0;
+    a.pl = null; a.clk = null; a.rt = null; a.strWarm = false; a.warmDone = false;
     save(); route();
   },
 
@@ -2563,21 +2935,24 @@ const Session = {
 
   /* ----- strength ----- */
   rStrength(a) {
+    if (a.strWarm) return Player.render(a, { title: 'Warm-up', skip: 'Session.endWarm()', skipLabel: 'Skip', art: Art.rocket(false), doneTitle: 'Warmed up', finish: 'Session.endWarm()', finishLabel: 'Start lifting' });
     const total = a.entries.reduce((n, e) => n + e.sets.length, 0), done = a.entries.reduce((n, e) => n + e.sets.filter(s => s.done).length, 0);
+    const wsteps = a.sess.warmSteps || mkSteps(a.sess.mobility || []);
     const half = done >= Math.ceil(total / 2) && !a.checkin;
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${esc(a.sess.title)}</b><div class="mute tiny">${done}/${total} sets · ${Math.round(Session.elapsedMin())} of ${a.minutes} min</div></div><button class="back" onclick="Session.finishStrength()">Finish</button></div>
       <div class="bar mb"><i style="width:${total ? done / total * 100 : 0}%"></i></div>
       ${a.notes.length ? `<div class="card mb small"><b>Adjusted for you:</b> <span class="mute">${a.notes.map(esc).join(' · ')}</span></div>` : ''}
-      ${a.sess.mobility && a.sess.mobility.length ? `<details class="mb"><summary>Warm-up · ${a.sess.mobility.length} moves</summary><div class="list">${a.sess.mobility.map(m => `<div class="item"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div><div class="sub">${esc(MOBMAP[m].cue)}</div></div><span class="num mute">45s</span></div>`).join('')}</div></details>` : ''}
+      ${Rest.card(a)}
+      ${wsteps.length && !a.warmDone ? `<div class="card mb"><div class="between"><div><b>Warm-up first</b><div class="mute small">${(a.sess.mobility || []).length} moves · about ${fmtMins(Math.max(1, Math.round(stepsSec(wsteps) / 60)))} · timed and guided, both sides</div></div></div><div class="row mt"><button class="sm" onclick="Session.startWarm()">Start warm-up</button><button class="sm ghost" onclick="Session.endWarm()">Skip it</button></div></div>` : ''}
       ${half ? `<div class="card mb" style="border-color:var(--acc)"><b>Halfway. How are you feeling?</b><div class="row mt"><button class="sm sec" onclick="Session.checkin('good')">Good</button><button class="sm sec" onclick="Session.checkin('tired')">Tired</button><button class="sm danger" onclick="Session.checkin('struggling')">Struggling</button></div></div>` : ''}
-      <div class="stack">${a.entries.map((e, ei) => { const ex = EXMAP[e.exId]; const isNext = ei === a.entries.findIndex(x => !x.sets.some(q => q.done)) && e.sets.some(q => !q.done); const proj = isNext ? Math.round(Session.projected()) : 0; return `${isNext ? `<div class="nextline"><span>Up next · about ${Math.max(1, Math.round(Session.exMinutes(e)))} min · on pace for ${proj} of ${a.minutes}</span><button class="sm ghost" onclick="Session.adjustSheet()">Adjust time</button></div>` : ''}<div class="card"><div class="exhead"><div class="row" style="align-items:flex-start"><div class="figthumb" onclick="Session.cue('${ex.id}')">${Figure.svg('ex', ex.id)}</div><div><div class="name">${esc(ex.n)}${e.subbed ? ' <span class="tag warn">swapped</span>' : ''}</div><div class="meta">${e.lo}–${e.hi} ${ex.timed ? 'sec' : 'reps'}${ex.bwOnly ? ' · bodyweight' : ''} ${S.loads[ex.id] && S.loads[ex.id].pr ? '· best e1RM ' + fmtW(S.loads[ex.id].pr) : ''}</div></div></div><button class="icon" onclick="Session.cue('${ex.id}')">?</button></div>
+      <div class="stack">${a.entries.map((e, ei) => { const ex = EXMAP[e.exId]; const isNext = ei === a.entries.findIndex(x => !x.sets.some(q => q.done)) && e.sets.some(q => !q.done); const proj = isNext ? Math.round(Session.projected()) : 0; return `${isNext ? `<div class="nextline"><span>Up next · about ${Math.max(1, Math.round(Session.exMinutes(e)))} min · on pace for ${proj} of ${a.minutes}</span><button class="sm ghost" onclick="Session.adjustSheet()">Adjust time</button></div>` : ''}<div class="card"><div class="exhead"><div class="row" style="align-items:flex-start"><div class="figthumb" onclick="Session.cue('${ex.id}')">${Figure.svg('ex', ex.id)}</div><div><div class="name">${esc(ex.n)}${e.subbed ? ' <span class="tag warn">swapped</span>' : ''}</div><div class="meta">${e.lo}–${e.hi} ${ex.timed ? 'sec' : 'reps'}${ex.uni ? ' <b>each side</b>' : ''}${ex.bwOnly ? (ex.equip.includes('vest') ? ' · wear the vest' : ex.equip.includes('ankle') ? ' · ankle weights on' : ex.equip.includes('bosu') ? ' · on the Bosu' : ' · bodyweight') : ''} ${S.loads[ex.id] && S.loads[ex.id].pr ? '· best e1RM ' + fmtW(S.loads[ex.id].pr) : ''}</div></div></div><button class="icon" onclick="Session.cue('${ex.id}')">?</button></div>
         <div class="hdr5"><span>#</span><span>${ex.bwOnly ? '' : unitW()}</span><span>${ex.timed ? 'sec' : 'reps'}</span><span>effort 1–10</span><span></span></div>
         ${e.sets.map((s, si) => `<div class="setrow"><span class="n">${si + 1}</span>${ex.bwOnly ? '<span class="n">bw</span>' : `<input type="number" inputmode="decimal" value="${s.weight != null ? fmtWn(s.weight, s.weight / KG < 20 ? 1 : 0) : ''}" placeholder="—" oninput="Session.setW(${ei},${si},this.value)">`}<input type="number" inputmode="numeric" value="${s.reps ?? ''}" oninput="Session.setR(${ei},${si},this.value)"><input type="number" inputmode="numeric" value="${s.rpe ?? ''}" placeholder="8" oninput="Session.setE(${ei},${si},this.value)"><div class="ok ${s.done ? 'on' : ''}" onclick="Session.tick(${ei},${si})">✓</div></div>`).join('')}
         <div class="row mt"><button class="sm ghost" onclick="Session.addSet(${ei})">+ set</button></div></div>`; }).join('')}</div>
       ${a.sess.cardio ? `<div class="card mt"><b>Finisher</b><div class="mute small">${CARDIOMAP[a.sess.cardio.modeId].n} · ${a.sess.cardio.minutes} min. Starts after you press Finish.</div></div>` : ''}
       <div class="stack mt2"><button onclick="Session.finishStrength()">Finish session</button></div></div>`;
   },
-  cue(exId) { const ex = EXMAP[exId]; sheet(`<h3>${esc(ex.n)}</h3><div class="figbox mt">${Figure.svg('ex', ex.id)}</div><p class="mt">${esc(ex.cue)}</p><p class="mute small">Loads: ${ex.reg.length ? ex.reg.map(r => REGIONS.find(x => x[0] === r)[1]).join(', ') : 'low joint stress'}</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
+  cue(exId) { const ex = EXMAP[exId]; sheet(`<h3>${esc(ex.n)}</h3><div class="figbox mt">${Figure.svg('ex', ex.id)}</div><p class="mt">${esc(ex.cue)}</p>${ex.uni ? '<p class="small"><b>One side at a time:</b> do all the reps on your left side, then the same number on your right. Count each set as both sides.</p>' : ''}<p class="mute small">Loads: ${ex.reg.length ? ex.reg.map(r => REGIONS.find(x => x[0] === r)[1]).join(', ') : 'low joint stress'}</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
   setW(ei, si, v) { const s = S.active.entries[ei].sets[si]; s.weight = v === '' || !(+v > 0) ? null : toKg(+v); if (si === 0) S.active.entries[ei].sets.slice(1).forEach(x => { if (!x.done) x.weight = s.weight; }); save(); },
   setR(ei, si, v) { S.active.entries[ei].sets[si].reps = clamp(Math.round(+v) || 0, 0, 500); save(); },
   setE(ei, si, v) { S.active.entries[ei].sets[si].rpe = +v ? clamp(+v, 1, 10) : null; save(); },
@@ -2606,11 +2981,12 @@ const Session = {
     const left = a.phaseLeft ?? (ph ? ph.sec : 0);
     const mm = Math.floor(left / 60), ss = String(left % 60).padStart(2, '0');
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${esc(mode.n)}</b><div class="mute tiny">${tail ? 'Finisher' : esc(a.sess.title)}</div></div><button class="back" onclick="Session.finishCardio()">Finish</button></div>
-      <div class="card"><div class="timerWrap" style="padding-top:6px"><div class="stopwatch" id="tm">${mm}:${ss}</div><div class="phase ${ph ? ph.k : ''}" id="ph">${ph ? esc(ph.label) : 'Done'}</div></div><div class="figbox sm mt">${Figure.svg('cardio', c.modeId)}</div></div>
+      <div class="card"><div class="timerWrap" style="padding-top:6px"><div class="eyebrow">This block</div><div class="stopwatch" id="tm">${mm}:${ss}</div><div class="phase ${ph ? ph.k : ''}" id="ph">${ph ? esc(ph.label) : 'Done'}</div><div class="mute small mt">Whole session <span class="num" id="cTot">${fmtClock(elapsed)}</span> of ${fmtClock(total)}</div></div><div class="figbox sm mt">${Figure.svg('cardio', c.modeId)}</div></div>
       <div class="bar mt"><i style="width:${total ? elapsed / total * 100 : 0}%"></i></div>
       ${ph ? Session.hrStrip(targetZone(ph.k, c.structure)) : ''}
       <div class="mute small mt center">${esc(c.label || '')}</div>
-      <div class="grid3 mt"><button class="sec" onclick="Session.pause()">${a.paused ? 'Resume' : 'Pause'}</button><button class="sec" onclick="Session.skipPhase()">Skip</button>${muteBtn()}</div>
+      <div class="grid3 mt"><button class="sec" onclick="Session.prevPhase()" ${a.phaseIdx > 0 ? '' : 'disabled'}>◀ Back</button><button onclick="Session.pause()">${a.paused ? 'Start' : 'Stop'}</button><button class="sec" onclick="Session.skipPhase()">Next ▶</button></div>
+      <div class="grid2 mt">${muteBtn()}<button class="sec" onclick="Sound.toggle()">${Sound.on() ? '🔔 Sounds on' : '🔕 Sounds off'}</button></div>
       <button class="ghost mt" onclick="Session.adjustSheet()">Adjust time</button>
       <div class="list mt">${c.phases.map((p, i) => `<div class="item" style="${i === a.phaseIdx ? 'border-color:var(--acc)' : i < a.phaseIdx ? 'opacity:.45' : ''}"><div class="tag ${p.k === 'hard' ? 'hot' : ''}">${p.k}</div><div class="grow">${esc(p.label)}</div><span class="num mute">${Math.floor(p.sec / 60)}:${String(p.sec % 60).padStart(2, '0')}</span></div>`).join('')}</div>
       <div class="card mt"><b>Stop if</b><div class="mute small">you feel chest pain, faint, or can't catch your breath during a recovery block. That is not pushing through — that is a signal.</div></div></div>`;
@@ -2679,20 +3055,14 @@ const Session = {
     const s = a.sess, mins = Math.floor(a.rideSec / 60), secs = String(a.rideSec % 60).padStart(2, '0');
     const plan = s.ride.minutes;
     if (a.ridePart === 'warm' || a.ridePart === 'cool') {
-      const list = a.ridePart === 'warm' ? s.warmMob : s.coolMob;
-      const i = a.mobIdx, done = i >= list.length;
-      const mv = done ? null : MOBMAP[list[i]];
-      return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${a.ridePart === 'warm' ? 'Before the ride' : 'After the ride'}</b><div class="mute tiny">${Math.min(i, list.length)}/${list.length}</div></div><button class="back" onclick="${a.ridePart === 'warm' ? "Session.startRide()" : "Session.complete()"}">Skip</button></div>
-        ${done ? `<div class="card hero glow"><div class="heroArt">${Art.bike(false)}</div><div class="heroBody"><h2>${a.ridePart === 'warm' ? 'Loosened up' : 'Nicely done'}</h2></div></div>`
-          : `<div class="card"><div class="eyebrow">Hold ${s.holdSec}s each</div><h2>${esc(mv.n)}</h2><div class="figbox mt">${Figure.svg('mob', list[i])}</div><div class="mute small mt">${esc(mv.cue)}</div></div>`}
-        <div class="bar mt"><i style="width:${Math.min(i, list.length) / list.length * 100}%"></i></div>
-        <div class="stack mt2">${done
-          ? (a.ridePart === 'warm' ? `<button onclick="Session.startRide()">Start the ride</button>` : `<button onclick="Session.complete()">Finish session</button>`)
-          : `<button onclick="Session.mobNext()">Done — next</button>`}</div></div>`;
+      const warm = a.ridePart === 'warm';
+      return Player.render(a, { title: warm ? 'Before the ride' : 'After the ride', skip: warm ? 'Session.startRide()' : 'Session.complete()', skipLabel: warm ? 'Skip' : 'Finish',
+        art: Art.bike(false), doneTitle: warm ? 'Loosened up' : 'Nicely done', finish: warm ? 'Session.startRide()' : 'Session.complete()', finishLabel: warm ? 'Start the ride' : 'Finish session',
+        extra: `<div class="card mt"><b>Made for the trail</b><div class="mute small">Every move here is done standing — no wall, no lying down, no hands and knees on dirt or rocks. Hold your bike for balance whenever you like.</div></div>` });
     }
     const targetZ = 3;
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>Riding</b><div class="mute tiny">planned ${plan} min</div></div><button class="back" onclick="Session.endRide()">Finish</button></div>
-      <div class="card"><div class="timerWrap" style="padding-top:6px"><div class="stopwatch">${mins}:${secs}</div><div class="phase easy">${a.paused ? 'Paused' : 'Rolling'}</div></div><div class="figbox sm mt">${Figure.svg('cardio', 'mtb')}</div></div>
+      <div class="card"><div class="timerWrap" style="padding-top:6px"><div class="stopwatch">${mins}:${secs}</div><div class="phase easy">${a.paused ? 'Paused' : 'Rolling'}</div><div class="mute small mt">Whole session <span class="num" id="clk">${fmtClock(Player.clkMs(a) / 1000)}</span></div></div><div class="figbox sm mt">${Figure.svg('cardio', 'mtb')}</div></div>
       ${Session.hrStrip(targetZ)}
       <div class="grid3 mt"><button class="sec" onclick="Session.pause()">${a.paused ? 'Resume' : 'Pause'}</button><button class="sec" onclick="Session.askHR(${targetZ})">Pulse</button>${muteBtn()}</div>
       <button class="ghost mt" onclick="Session.adjustSheet()">Change planned time</button>
@@ -2718,7 +3088,7 @@ const Session = {
       if (a.rideSec % 15 === 0) save();
     }, 1000);
   },
-  startRide() { const a = S.active; a.ridePart = 'ride'; a.mobIdx = 0; a.rideT0 = Date.now(); a.ridePausedMs = 0; a.pausedAt = null; a.paused = false; Awake.on(); save(); route(); },
+  startRide() { const a = S.active; a.ridePart = 'ride'; a.mobIdx = 0; a.rideT0 = Date.now(); a.ridePausedMs = 0; a.pausedAt = null; a.paused = false; Player.clkStart(a); Sound.play('start'); Awake.on(); save(); route(); },
   endRide() {
     clearInterval(TMR); const a = S.active;
     a.rideSec = Session.rideSecNow(a);
@@ -2734,28 +3104,24 @@ const Session = {
 
   /* ----- mobility ----- */
   rMob(a) {
-    const s = a.sess; const total = s.moves.length * s.rounds; const i = a.mobIdx; const done = i >= total;
-    const mv = done ? null : MOBMAP[s.moves[i % s.moves.length]];
-    return h`<div class="fade"><div class="topbar"><button class="back" onclick="Session.abandon()">✕</button><div class="center"><b>${esc(s.title)}</b><div class="mute tiny">${Math.min(i, total)}/${total}</div></div><button class="back" onclick="Session.complete()">Finish</button></div>
-      ${done ? `<div class="card hero glow" style="min-height:200px"><div class="heroArt">${Art.ribbon()}</div><div class="heroBody"><h2>All done. Breathe.</h2></div></div>` : `<div class="card"><div class="eyebrow">Round ${Math.floor(i / s.moves.length) + 1} · hold ${s.holdSec}s</div><h2>${esc(mv.n)}</h2><div class="figbox mt">${Figure.svg('mob', s.moves[i % s.moves.length])}</div><div class="mute small mt">${esc(mv.cue)}</div></div>`}
-      <div class="bar mt"><i style="width:${Math.min(i, total) / total * 100}%"></i></div>
-      <div class="stack mt2">${done ? `<button onclick="Session.complete()">Finish session</button>` : `<button onclick="Session.mobNext()">Done — next move</button><button class="ghost" onclick="Session.adjustSheet()">Adjust time</button>`}</div>
-      <div class="list mt2">${s.moves.map((m, k) => `<div class="item" style="${k === i % s.moves.length && !done ? 'border-color:var(--acc)' : ''}"><div class="figthumb">${Figure.svg('mob', m)}</div><div class="grow"><div class="title">${esc(MOBMAP[m].n)}</div></div><span class="num mute">${s.holdSec}s</span></div>`).join('')}</div></div>`;
+    return Player.render(a, { title: a.sess.title, skip: 'Session.complete()', skipLabel: 'Finish', art: Art.ribbon(), doneTitle: 'All done. Breathe.', finish: 'Session.complete()', finishLabel: 'Finish session' });
   },
-  mobNext() { S.active.mobIdx++; save(); route(); if (navigator.vibrate) navigator.vibrate(12); },
+  mobNext() { Player.next(); },
   hrNoop() { },
 
   /* ----- complete ----- */
   // minutes you actually trained. If the session was left open (forgot to press Finish), use the last thing you logged instead.
   realMinutes(a) {
+    const ck = a.clk ? Player.clkMs(a) / 60000 : 0;
+    if (a.sess.kind === 'mobility' && ck >= 1) return { minutes: Math.max(1, Math.round(ck)), capped: false };
     const el = (Date.now() - a.startedAt) / 60000, planned = a.minutes || (S.profile && S.profile.minutes) || 45;
     if (el <= Math.max(planned * 2, planned + 45)) return { minutes: Math.max(1, Math.round(el)), capped: false };
     let est = planned;
     const ticks = []; (a.entries || []).forEach(e => e.sets.forEach(s => { if (s.done && s.at) ticks.push(s.at); }));
     if (ticks.length) est = (Math.max(...ticks) - a.startedAt) / 60000 + 2;
     if (a.sess.kind === 'cardio' && a.cardio) est = a.cardio.minutes + 2;
-    if (a.sess.kind === 'ride' && a.ride) est = a.ride.minutes + ((a.sess.warmMob || []).length + (a.sess.coolMob || []).length) * ((a.sess.holdSec || 40) + 15) / 60;
-    if (a.sess.kind === 'mobility') est = (a.mobIdx || 1) * ((a.sess.holdSec || 45) + 15) / 60;
+    if (a.sess.kind === 'ride' && a.ride) est = a.ride.minutes + (stepsSec(a.sess.warmSteps || []) + stepsSec(a.sess.coolSteps || [])) / 60;
+    if (a.sess.kind === 'mobility') { const st = a.sess.steps || []; est = Math.max(1, (stepsSec(st) - stepsSec(st, Math.min(a.mobIdx || 1, st.length))) / 60); }
     if (a.cardio && a.sess.kind === 'strength') est += a.cardio.minutes;
     return { minutes: Math.max(1, Math.round(Math.min(est, el))), capped: true };
   },
@@ -2933,15 +3299,18 @@ Object.assign(Session, {
   /* strength: tick records the time, which is how pace is learned */
   tick(ei, si) {
     const s = S.active.entries[ei].sets[si]; s.done = !s.done; s.at = s.done ? Date.now() : null;
+    if (s.done && S.active.entries.some(e => e.sets.some(x => !x.done))) { const r = Rest.st(S.active); r.st = 'idle'; r.left = null; Rest.start(); }
     save(); route(); if (navigator.vibrate) navigator.vibrate(12);
   },
+  startWarm() { const a = S.active; a.strWarm = true; a.pl = null; Player.clkStart(a); save(); route(); },
+  endWarm() { const a = S.active; a.strWarm = false; a.warmDone = true; a.pl = null; save(); route(); },
 
   /* the "adjust" sheet — same for every session type */
   adjustSheet() {
     const a = S.active, el = Math.round(Session.elapsedMin());
     let proj, now;
     if (a.sess.kind === 'strength' && a.stage !== 'tail') proj = Math.round(Session.projected());
-    else if (a.sess.kind === 'mobility') { const s = a.sess, left = Math.max(0, s.moves.length * s.rounds - a.mobIdx); proj = Math.round(el + left * (s.holdSec + 15) / 60); }
+    else if (a.sess.kind === 'mobility') { const st = Player.steps(a), i = Player.st(a).i; proj = Math.round(el + stepsSec(st, Math.min(i, st.length)) / 60); }
     else if (a.sess.kind === 'ride') proj = a.sess.ride.minutes;
     else { const c = a.sess.cardio; proj = Math.round(el + (c.phases.slice(a.phaseIdx + 1).reduce((n, p) => n + p.sec, 0) + (a.phaseLeft || 0)) / 60); }
     now = a.minutes || proj;
@@ -3021,22 +3390,25 @@ Object.assign(Session, {
     return 'Rebuilt to fit: about ' + fmtMins(Math.round(tot / 60)) + ' of cardio in total.';
   },
   retimeMob(target) {
-    const a = S.active, s = a.sess;
-    const doneMoves = a.mobIdx, remSec = target * 60 - (Date.now() - a.startedAt) / 1000;
-    const want = Math.max(1, Math.round(remSec / (s.holdSec + 15)));
-    const flat = []; for (let r = 0; r < s.rounds; r++) flat.push(...s.moves);
-    const keep = flat.slice(0, doneMoves);
-    const pool = MOB.filter(m => !(m.reg || []).some(x => (a.injuries || []).includes(x))).map(m => m.id);
-    const next = []; let i = 0;
-    while (next.length < want && i < 200) { next.push(pool.length ? pool[(doneMoves + i) % pool.length] : flat[i % flat.length]); i++; }
-    s.moves = keep.concat(next); s.rounds = 1;
-    return 'Now ' + next.length + ' more moves, about ' + fmtMins(target) + ' total.';
+    const a = S.active, s = a.sess, steps = Player.steps(a), pl = Player.st(a);
+    // keep what's done, plus both sides of the move you're on
+    let keepTo = Math.min(pl.i, steps.length);
+    if (keepTo < steps.length) { const id = steps[keepTo].id; while (keepTo + 1 < steps.length && steps[keepTo + 1].id === id) keepTo++; keepTo++; }
+    const kept = steps.slice(0, keepTo);
+    const spent = a.clk && Player.clkMs(a) > 30000 ? Player.clkMs(a) / 1000 : (Date.now() - a.startedAt) / 1000;
+    const remSec = target * 60 - spent - stepsSec(steps.slice(Math.min(pl.i, steps.length), keepTo)) - MOB_TRANS;
+    const done = new Set(kept.map(x => x.id)), pool = mobPool(S.profile, { bad: new Set(a.injuries || []), exclude: done });
+    const q = { warm: rotate(pool.filter(m => m.ph <= 1 && !m.yoga), keepTo), yoga: rotate(pool.filter(m => m.yoga), keepTo), hold: rotate(pool.filter(m => !m.yoga && m.ph >= 2), keepTo) };
+    const more = remSec > 30 ? fillMoves(q, ['yoga', 'hold', 'warm', 'yoga', 'hold'], remSec, 1, pool) : [];
+    s.steps = kept.concat(mkSteps(more)); s.moves = s.steps.map(x => x.id).filter((x, n, arr) => arr.indexOf(x) === n); s.minutes = target;
+    return more.length ? 'Now ' + more.length + ' more move' + (more.length > 1 ? 's' : '') + ', about ' + fmtMins(target) + ' in total.' : 'No time for more moves — finish the one you are on.';
   },
 
   /* cardio clock: timestamp based, so a locked phone catches up instead of drifting */
   phaseCue(ph, first) {
     if (!ph) return;
     cueFlash(phaseTitle(ph), shortTime(ph.sec), ph.k === 'hard' ? 'hot' : 'easy');
+    setTimeout(() => Sound.play('start'), first ? 0 : 750);
     Voice.say(phaseWords(ph) + '. ' + spokenTime(ph.sec) + '.');
     if (!first && navigator.vibrate) navigator.vibrate([80, 60, 80]);
   },
@@ -3057,6 +3429,8 @@ Object.assign(Session, {
         a.phaseLeft--;
         const cur = c.phases[a.phaseIdx], nx = c.phases[a.phaseIdx + 1];
         if (live && a.phaseLeft === 10 && nx && nx.k === 'hard' && cur.k !== 'hard') { cueFlash('10 seconds', 'then ' + phaseTitle(nx).toLowerCase(), 'warn'); Voice.say('Ten seconds. Get ready.'); }
+        if (live && a.phaseLeft === 5 && cur.sec >= 15) Sound.play('warn');
+        if (live && a.phaseLeft === 0) Sound.play(nx ? 'end' : 'done');
         if (a.phaseLeft <= 0) {
           a.phaseIdx++;
           if (a.phaseIdx >= c.phases.length) { clearInterval(TMR); cueFlash('DONE', 'Nice work', 'easy'); Voice.say('Done. Nice work.'); if (navigator.vibrate) navigator.vibrate([200, 100, 200]); Session.finishCardio(); return; }
@@ -3065,6 +3439,7 @@ Object.assign(Session, {
       }
       if (changed) { Session.phaseCue(c.phases[a.phaseIdx]); save(); route(); return; }
       const t = $('#tm'); if (t) t.textContent = Math.floor(a.phaseLeft / 60) + ':' + String(a.phaseLeft % 60).padStart(2, '0');
+      const ct = $('#cTot'); if (ct) ct.textContent = fmtClock(c.phases.slice(0, a.phaseIdx).reduce((n, p) => n + p.sec, 0) + c.phases[a.phaseIdx].sec - a.phaseLeft);
       Session.hrVoice(targetZone(c.phases[a.phaseIdx].k, c.structure));
       if (a.phaseLeft % 10 === 0) save();
     }, 250);
@@ -3074,6 +3449,11 @@ Object.assign(Session, {
     if (HR.shouldWarn()) { if (navigator.vibrate) navigator.vibrate([300, 120, 300]); toast('Heart rate very high — ease off and let it come down', 6000); if (Date.now() - (HR.saidAt || 0) > 30000) { HR.saidAt = Date.now(); Voice.say('Heart rate very high. Ease off.'); } return; }
     const adv = HR.advice(z); if (!adv || adv.k === 'ok') { HR.saidK = 'ok'; return; }
     if (adv.k !== HR.saidK && Date.now() - (HR.saidAt || 0) > 45000) { HR.saidK = adv.k; HR.saidAt = Date.now(); Voice.say(adv.t); }
+  },
+  prevPhase() {
+    const a = S.active, c = a.sess.cardio; if (!c || a.phaseIdx <= 0) return;
+    a.phaseIdx = Math.min(a.phaseIdx, c.phases.length) - 1; a.phaseLeft = c.phases[a.phaseIdx].sec; a.lastTick = Date.now();
+    Session.phaseCue(c.phases[a.phaseIdx]); save(); route();
   },
   skipPhase() {
     const a = S.active; a.phaseIdx++;
@@ -3096,6 +3476,273 @@ Object.assign(Session, {
   };
   Session.abandon = function () { const r = _abandon.apply(Session, arguments); if (!S.active) { Awake.off(); try { speechSynthesis.cancel(); } catch (e) { } } return r; };
 })();
+
+/* =========================================================
+   SOUNDS — a rising chime to start, three short pips when a move
+   is nearly over, a falling chime at the end, and a fanfare when
+   the whole session is done. Made on the fly, nothing to download.
+   ========================================================= */
+const Sound = {
+  ctx: null,
+  on() { return S.flags.beep !== false; },
+  init() {
+    try {
+      if (!Sound.ctx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return; Sound.ctx = new C(); }
+      if (Sound.ctx.state === 'suspended') Sound.ctx.resume();
+    } catch (e) { }
+  },
+  tone(f, at, dur, vol, type) {
+    const c = Sound.ctx, o = c.createOscillator(), g = c.createGain();
+    o.type = type || 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(vol || 0.35, at + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(g); g.connect(c.destination); o.start(at); o.stop(at + dur + 0.05);
+  },
+  play(kind) {
+    if (!Sound.on()) return;
+    Sound.init(); const c = Sound.ctx; if (!c) return;
+    const t = c.currentTime + 0.03;
+    try {
+      if (kind === 'start') { Sound.tone(660, t, 0.16); Sound.tone(990, t + 0.15, 0.3); }
+      else if (kind === 'warn') { [0, 0.22, 0.44].forEach(d => Sound.tone(880, t + d, 0.1, 0.3, 'triangle')); }
+      else if (kind === 'end') { Sound.tone(988, t, 0.18); Sound.tone(784, t + 0.17, 0.18); Sound.tone(523, t + 0.34, 0.5); }
+      else if (kind === 'done') { [523, 659, 784, 1047].forEach((f, k) => Sound.tone(f, t + k * 0.14, k === 3 ? 0.9 : 0.2, 0.32)); }
+    } catch (e) { }
+    if (navigator.vibrate) navigator.vibrate(kind === 'warn' ? [60, 80, 60, 80, 60] : kind === 'done' ? [200, 100, 200] : 90);
+  },
+  toggle() { S.flags.beep = !Sound.on(); save(); if (Sound.on()) Sound.play('start'); route(); }
+};
+/* phones only allow sound after a tap, so wake the audio on the first touch */
+document.addEventListener('pointerdown', () => { if (Sound.on()) Sound.init(); }, { passive: true });
+
+/* =========================================================
+   GUIDED PLAYER — stretching, yoga, foam roller and massage moves.
+   One move (and one side) at a time, with:
+   · a timer for the current move (Start / Stop), and a clock for the whole session
+   · Back and Next, and Replace for a move you can't do or don't like
+   · left side, then right side straight after, with a mirrored animation
+   ========================================================= */
+function fmtClock(sec) { sec = Math.max(0, Math.round(sec)); const hh = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), r = String(sec % 60).padStart(2, '0'); return hh ? hh + ':' + String(m).padStart(2, '0') + ':' + r : m + ':' + r; }
+const Player = {
+  /* which list of steps is playing right now */
+  key(a) {
+    const s = a.sess; if (!s) return null;
+    if (s.kind === 'mobility') return 'steps';
+    if (s.kind === 'ride') return a.ridePart === 'cool' ? 'coolSteps' : a.ridePart === 'warm' ? 'warmSteps' : null;
+    if (s.kind === 'strength' && a.strWarm) return 'warmSteps';
+    return null;
+  },
+  steps(a) {
+    const s = a.sess, k = Player.key(a); if (!k) return [];
+    if (!Array.isArray(s[k])) {            // sessions saved by an older version of the app
+      if (k === 'steps') { const flat = []; for (let r = 0; r < (s.rounds || 1); r++) flat.push(...(s.moves || [])); s.steps = mkSteps(flat); if (s.holdSec) s.steps.forEach(x => { x.sec = s.holdSec; }); }
+      else if (k === 'warmSteps') s.warmSteps = mkSteps(s.kind === 'ride' ? s.warmMob : s.mobility);
+      else if (k === 'coolSteps') s.coolSteps = mkSteps(s.coolMob);
+    }
+    s[k] = s[k].filter(x => MOBMAP[x.id]);
+    return s[k];
+  },
+  st(a) {
+    const k = Player.key(a);
+    if (!a.pl || a.pl.list !== k) a.pl = { list: k, i: 0, st: 'idle', left: null, t0: 0, warned: false };
+    return a.pl;
+  },
+  left(a) {
+    const pl = Player.st(a), step = Player.steps(a)[pl.i];
+    const base = pl.left != null ? pl.left : (step ? step.sec : 0);
+    return (pl.st === 'run' || pl.st === 'prep') ? base - (Date.now() - pl.t0) / 1000 : base;
+  },
+  /* ---- whole-session clock ---- */
+  clk(a) { a.clk = a.clk || { run: false, acc: 0, t0: 0 }; return a.clk; },
+  clkMs(a) { const c = Player.clk(a); return c.acc + (c.run ? Date.now() - c.t0 : 0); },
+  clkStart(a) { const c = Player.clk(a); if (!c.run) { c.run = true; c.t0 = Date.now(); } },
+  clkStop(a) { const c = Player.clk(a); if (c.run) { c.acc += Date.now() - c.t0; c.run = false; } },
+  clkToggle() {
+    const a = S.active; if (!a) return; Sound.init();
+    if (Player.clk(a).run) { Player.clkStop(a); if (Player.key(a)) Player.halt(a); Rest.halt(a); } else { Player.clkStart(a); Awake.on(); }
+    save(); route();
+  },
+  /* ---- the current move's timer ---- */
+  announce(a, prep) {
+    const st = Player.steps(a)[Player.st(a).i]; if (!st) return;
+    const m = MOBMAP[st.id], mi = modeInfo(m);
+    Voice.say((prep ? 'Next: ' : '') + (st.side ? sideLabel(m, st.side) + '. ' : '') + m.n + '. ' + mi.say + ' for ' + spokenTime(st.sec) + '.');
+  },
+  start() {
+    const a = S.active; if (!a) return; const pl = Player.st(a), steps = Player.steps(a); if (pl.i >= steps.length) return;
+    Sound.init();
+    const fromPrep = pl.st === 'prep', L = fromPrep ? steps[pl.i].sec : Player.left(a);
+    pl.left = L > 0.5 ? L : steps[pl.i].sec; pl.st = 'run'; pl.t0 = Date.now();
+    if (pl.left >= steps[pl.i].sec - 0.5) { pl.warned = false; if (!fromPrep) Player.announce(a, false); }
+    Sound.play('start'); Player.clkStart(a); Awake.on();
+    save(); Player.paint();
+  },
+  halt(a) { const pl = Player.st(a); if (pl.st === 'run') pl.left = Player.left(a); if (pl.st === 'prep') pl.left = null; pl.st = 'idle'; },
+  stop() { const a = S.active; if (!a) return; Player.halt(a); save(); Player.paint(); },
+  toggle() { const a = S.active; if (!a) return; const pl = Player.st(a); if (pl.st === 'run') Player.stop(); else Player.start(); },
+  /* move to step k; carry on timing if the timer was going */
+  go(k, keepGoing) {
+    const a = S.active; if (!a) return; const pl = Player.st(a), steps = Player.steps(a);
+    const going = keepGoing && (pl.st === 'run' || pl.st === 'prep');
+    pl.i = clamp(k, 0, steps.length); pl.left = null; pl.warned = false;
+    a.mobIdx = Math.max(a.mobIdx || 0, pl.i);
+    if (pl.i >= steps.length) { pl.st = 'idle'; Player.allDone(a); }
+    else if (going) { pl.st = 'prep'; pl.left = stepGap(steps, pl.i) || MOB_SWITCH; pl.t0 = Date.now(); Player.announce(a, true); }
+    else pl.st = 'idle';
+    save(); route();
+  },
+  next() { const a = S.active; if (!a) return; Player.go(Player.st(a).i + 1, true); if (navigator.vibrate) navigator.vibrate(12); },
+  back() { const a = S.active; if (!a) return; const pl = Player.st(a); if (pl.i <= 0) return; Player.go(pl.i - 1, false); },
+  allDone(a) {
+    Sound.play('done');
+    if (a.sess.kind === 'mobility') { Player.clkStop(a); Voice.say('All done. Nice work.'); }
+    else Voice.say(a.strWarm ? 'Warm-up done. Time to lift.' : a.sess.kind === 'ride' && a.ridePart === 'warm' ? 'Warm-up done. Enjoy the ride.' : 'Stretches done. Nice work.');
+  },
+  /* the heartbeat: counts down, plays the sounds, moves on */
+  tick() {
+    const a = S.active; if (!a || !a.sess || !location.hash.startsWith('#/session')) return;
+    if (Rest.tick(a)) return;
+    if (!Player.key(a)) { Player.paintClk(a); return; }
+    const pl = Player.st(a), steps = Player.steps(a);
+    let changed = false, guard = 0;
+    while (guard++ < 400 && pl.i < steps.length && (pl.st === 'run' || pl.st === 'prep')) {
+      const L = Player.left(a), late = -L;
+      if (pl.st === 'run') {
+        if (!pl.warned && L <= 5.2 && L > 0 && steps[pl.i].sec >= 15) { pl.warned = true; Sound.play('warn'); }
+        if (L > 0) break;
+        if (late < 3) Sound.play('end');
+        pl.i++; a.mobIdx = Math.max(a.mobIdx || 0, pl.i); pl.warned = false; changed = true;
+        if (pl.i >= steps.length) { pl.st = 'idle'; pl.left = null; Player.allDone(a); break; }
+        if (S.flags.auto === false) { pl.st = 'idle'; pl.left = null; break; }
+        pl.st = 'prep'; pl.left = stepGap(steps, pl.i); pl.t0 = Date.now() - late * 1000;
+        if (late < 3) Player.announce(a, true);
+      } else {
+        if (L > 0) break;
+        pl.st = 'run'; pl.left = steps[pl.i].sec; pl.t0 = Date.now() - late * 1000; pl.warned = false;
+        if (late < 3) Sound.play('start');
+        save();
+      }
+    }
+    if (changed) { save(); route(); return; }
+    Player.paint();
+    if (Math.random() < 0.05) save();
+  },
+  paintClk(a) {
+    const el = $('#clk'); if (!el) return;
+    el.textContent = fmtClock(Player.clkMs(a) / 1000);
+    const k = Player.key(a), sub = $('#clkSub');
+    if (sub && k) { const pl = Player.st(a), steps = Player.steps(a); const left = pl.i < steps.length ? Math.max(0, Player.left(a)) + stepsSec(steps, pl.i + 1) + (pl.i + 1 < steps.length ? stepGap(steps, pl.i + 1) : 0) : 0; sub.textContent = left > 0 ? 'About ' + fmtClock(left) + ' of moves left' : 'All moves done'; }
+    const bar = $('#clkBar'); if (bar && k) { const steps = Player.steps(a), tot = stepsSec(steps), pl = Player.st(a); const done = pl.i >= steps.length ? tot : tot - (Math.max(0, Player.left(a)) + stepsSec(steps, pl.i + 1) + (pl.i + 1 < steps.length ? stepGap(steps, pl.i + 1) : 0)); bar.style.width = clamp(done / Math.max(1, tot) * 100, 0, 100) + '%'; }
+  },
+  paint() {
+    const a = S.active; if (!a) return;
+    Player.paintClk(a);
+    const t = $('#tt'); if (!t || !Player.key(a)) return;
+    const pl = Player.st(a), steps = Player.steps(a), st = steps[pl.i]; if (!st) return;
+    const L = Math.max(0, Player.left(a)), m = MOBMAP[st.id];
+    t.textContent = fmtClock(Math.ceil(L - 0.05));
+    const lab = $('#ttLabel'), btn = $('#ttBtn'), bar = $('#ttBar');
+    if (lab) lab.textContent = pl.st === 'prep' ? (steps[pl.i - 1] && steps[pl.i - 1].id === st.id ? 'Switch sides — get ready' : 'Get ready — next move') : pl.st === 'run' ? (m.mode === 'hold' ? 'Holding — stay still' : m.mode === 'flow' ? 'Keep moving' : 'Keep rolling') : (pl.left != null && pl.left < st.sec - 0.5 ? 'Stopped' : 'Get into position, then tap Start');
+    t.classList.toggle('prep', pl.st === 'prep');
+    if (btn) btn.textContent = pl.st === 'run' || pl.st === 'prep' ? 'Stop' : 'Start';
+    if (bar) bar.style.width = (pl.st === 'prep' ? 0 : clamp((1 - L / st.sec) * 100, 0, 100)) + '%';
+    const cb = $('#clkBtn'); if (cb) cb.textContent = Player.clk(a).run ? 'Stop clock' : 'Start clock';
+  },
+  /* ---- the screen ---- */
+  render(a, o) {
+    const steps = Player.steps(a), pl = Player.st(a), i = Math.min(pl.i, steps.length), done = i >= steps.length;
+    const top = `<div class="topbar"><button class="back" onclick="Session.abandon()" aria-label="Quit session">✕</button><div class="center"><b>${esc(o.title)}</b><div class="mute tiny">${done ? 'All ' + steps.length + ' done' : 'Step ' + (i + 1) + ' of ' + steps.length}</div></div><button class="back" onclick="${o.skip}">${o.skipLabel}</button></div>`;
+    const clock = `<div class="card mt"><div class="between"><div><div class="eyebrow">Whole session</div><div class="big num" id="clk">${fmtClock(Player.clkMs(a) / 1000)}</div><div class="mute small" id="clkSub"></div></div><button class="sm sec" id="clkBtn" style="width:auto" onclick="Player.clkToggle()">${Player.clk(a).run ? 'Stop clock' : 'Start clock'}</button></div><div class="bar mt"><i id="clkBar" style="width:0%"></i></div></div>`;
+    const toggles = `<div class="chips mt"><span class="chip ${Sound.on() ? 'on' : ''}" onclick="Sound.toggle()">${Sound.on() ? '🔔 Sounds on' : '🔕 Sounds off'}</span><span class="chip ${S.flags.mute ? '' : 'on'}" onclick="Voice.toggle()">${S.flags.mute ? '🔇 Voice off' : '🔊 Voice on'}</span><span class="chip ${S.flags.auto === false ? '' : 'on'}" onclick="S.flags.auto=S.flags.auto===false;save();route()">${S.flags.auto === false ? 'Auto-next off' : 'Auto-next on'}</span></div>`;
+    if (done) return h`<div class="fade">${top}<div class="card hero glow" style="min-height:200px"><div class="heroArt">${o.art}</div><div class="heroBody"><h2>${esc(o.doneTitle)}</h2><div class="mute small">${steps.length} steps · ${fmtClock(stepsSec(steps))} of moves</div></div></div>
+      ${clock}<div class="stack mt2"><button onclick="${o.finish}">${esc(o.finishLabel)}</button>${steps.length ? `<button class="ghost" onclick="Player.back()">Back to the last move</button>` : ''}</div></div>`;
+    const st = steps[i], m = MOBMAP[st.id], mi = modeInfo(m), noun = m.mode === 'roll' ? 'move' : m.yoga ? 'pose' : 'stretch';
+    const sideBadge = st.side ? `<div class="sideBadge side${st.side}">${st.side === 'L' ? '◀ ' : ''}${esc(sideLabel(m, st.side))}${st.side === 'R' ? ' ▶' : ''}</div>` : `<div class="mute small mt">Both sides together</div>`;
+    const upNext = steps.map((x, k) => { const mm = MOBMAP[x.id]; return `<div class="item" style="${k === i ? 'border-color:var(--acc)' : k < i ? 'opacity:.5' : ''}" onclick="Player.go(${k}, false)"><div class="figthumb">${Figure.mob(x.id, x.side)}</div><div class="grow"><div class="title">${esc(mm.n)}</div><div class="sub">${x.side ? esc(sideLabel(mm, x.side)) + ' · ' : ''}${esc(modeInfo(mm).t)}</div></div><span class="num mute">${fmtClock(x.sec)}</span></div>`; }).join('');
+    return h`<div class="fade">${top}
+      <div class="card"><div class="between"><span class="modeTag ${m.mode}">${esc(mi.t)}</span><span class="pill">${shortTime(st.sec)}${st.side ? ' per side' : ''}</span></div>
+        <h2 class="mt">${esc(m.n)}</h2>${sideBadge}
+        <div class="figbox mt">${Figure.mob(st.id, st.side)}</div>
+        <p class="small mt" style="margin-bottom:6px"><b>${esc(mi.t)} for ${esc(spokenTime(st.sec))}.</b> ${esc(mi.d)}</p>
+        <div class="mute small">${esc(m.cue)}</div></div>
+      <div class="card mt"><div class="eyebrow center" id="ttLabel">&nbsp;</div><div class="stopwatch" id="tt">${fmtClock(Player.left(a))}</div><div class="bar mt"><i id="ttBar" style="width:0%"></i></div>
+        <div class="grid3 mt"><button class="sec" onclick="Player.back()" ${i === 0 ? 'disabled' : ''}>◀ Back</button><button id="ttBtn" onclick="Player.toggle()">Start</button><button class="sec" onclick="Player.next()">Next ▶</button></div>
+        <button class="ghost mt" onclick="Player.replace()">Replace this ${noun}</button></div>
+      ${clock}${toggles}
+      ${o.extra || ''}
+      <h3 class="mt2 mb">All steps</h3><div class="list">${upNext}</div></div>`;
+  },
+  /* ---- replace a move you can't do or don't like ---- */
+  replace() {
+    const a = S.active; if (!a) return; const steps = Player.steps(a), st = steps[Player.st(a).i]; if (!st) return;
+    const m = MOBMAP[st.id], trail = a.sess.kind === 'ride', inSess = new Set(steps.map(x => x.id));
+    const score = x => (x.area === m.area ? 4 : 0) + (x.mode === m.mode ? 2 : 0) + (!!x.yoga === !!m.yoga ? 1 : 0) + (inSess.has(x.id) ? -3 : 0);
+    const alts = mobPool(S.profile, { trail, bad: new Set(a.injuries || []) }).filter(x => x.id !== m.id).sort((x, y) => score(y) - score(x));
+    sheet(h`<h3>Replace ${esc(m.n)}</h3><p class="mute small">Tap one to swap it in. It takes the same spot${m.uni ? ' and is done on both sides' : ''}, so you still get the full stretching time.</p>
+      ${trail ? '<p class="mute tiny">Only standing moves that need nothing but you are shown — fine for a dirt or rocky trail.</p>' : ''}
+      <label class="row mt" style="gap:10px;color:var(--ink);font-size:.95rem"><input type="checkbox" id="mobNever" style="width:22px;height:22px;flex:none"> Don't give me ${esc(m.n)} again</label>
+      <div class="list mt">${alts.map(x => `<div class="item" onclick="Player.doReplace('${x.id}')"><div class="figthumb">${Figure.mob(x.id, 'L')}</div><div class="grow"><div class="title">${esc(x.n)}</div><div class="sub">${esc(modeInfo(x).t)}${x.uni ? ' · each side' : ''}${inSess.has(x.id) ? ' · already in this session' : ''}</div></div></div>`).join('')}</div>
+      <button class="ghost mt" onclick="closeSheet()">Keep ${esc(m.n)}</button>`);
+  },
+  doReplace(newId) {
+    const a = S.active; if (!a) return; const k = Player.key(a), steps = Player.steps(a), pl = Player.st(a), i = pl.i, old = steps[i].id;
+    const never = $('#mobNever') && $('#mobNever').checked;
+    let s0 = i, e = i; while (s0 > 0 && steps[s0 - 1].id === old) s0--; while (e + 1 < steps.length && steps[e + 1].id === old) e++;
+    const oldTotal = steps.slice(s0, e + 1).reduce((n, x) => n + x.sec, 0), m = MOBMAP[newId];
+    const per = Math.max(20, Math.round((m.uni ? oldTotal / 2 : oldTotal) / 5) * 5);
+    const fresh = m.uni ? [{ id: newId, side: 'L', sec: per }, { id: newId, side: 'R', sec: per }] : [{ id: newId, side: null, sec: per }];
+    steps.splice(s0, e - s0 + 1, ...fresh);
+    const ids = steps.map(x => x.id).filter((x, n, arr) => arr.indexOf(x) === n);
+    if (k === 'steps') a.sess.moves = ids; else if (k === 'coolSteps') a.sess.coolMob = ids; else if (a.sess.kind === 'ride') a.sess.warmMob = ids; else a.sess.mobility = ids;
+    if (never) { S.mobAvoid = (S.mobAvoid || []).filter(x => x !== old).concat(old); }
+    pl.i = s0; pl.st = 'idle'; pl.left = null; pl.warned = false;
+    closeSheet(); save(); route();
+    toast(m.n + ' swapped in' + (never ? '. ' + MOBMAP[old].n + ' won\'t be picked again.' : ''), 3200);
+  }
+};
+
+/* =========================================================
+   TASK TIMER for strength days — rest between sets, or time a hold.
+   Starts by itself when you tick a set.
+   ========================================================= */
+const Rest = {
+  st(a) { a.rt = a.rt || { len: 90, st: 'idle', left: null, t0: 0, warned: false }; return a.rt; },
+  left(a) { const r = Rest.st(a), base = r.left != null ? r.left : r.len; return r.st === 'run' ? base - (Date.now() - r.t0) / 1000 : base; },
+  start() { const a = S.active; if (!a) return; const r = Rest.st(a); Sound.init(); const L = Rest.left(a); r.left = L > 0.5 ? L : r.len; if (r.left >= r.len - 0.5) r.warned = false; r.st = 'run'; r.t0 = Date.now(); Sound.play('start'); Player.clkStart(a); Awake.on(); save(); Rest.paint(a); },
+  halt(a) { const r = Rest.st(a); if (r.st === 'run') { r.left = Rest.left(a); r.st = 'idle'; } },
+  toggle() { const a = S.active; if (!a) return; const r = Rest.st(a); if (r.st === 'run') { Rest.halt(a); save(); Rest.paint(a); } else Rest.start(); },
+  reset() { const a = S.active; if (!a) return; const r = Rest.st(a); r.st = 'idle'; r.left = null; r.warned = false; save(); Rest.paint(a); },
+  setLen(n) { const a = S.active; if (!a) return; const r = Rest.st(a); r.len = n; if (r.st !== 'run') r.left = null; save(); route(); },
+  /* returns true when it handled this tick (strength screen) */
+  tick(a) {
+    if (!a.sess || a.sess.kind !== 'strength' || a.strWarm || a.stage !== 'work') return false;
+    const r = Rest.st(a);
+    if (r.st === 'run') {
+      const L = Rest.left(a);
+      if (!r.warned && L <= 5.2 && L > 0 && r.len >= 15) { r.warned = true; Sound.play('warn'); }
+      if (L <= 0) { r.st = 'idle'; r.left = null; if (L > -3) { Sound.play('end'); Voice.say('Time. Next set.'); } save(); }
+    }
+    Rest.paint(a); Player.paintClk(a);
+    return true;
+  },
+  paint(a) {
+    const el = $('#rt'); if (!el) return; const r = Rest.st(a), L = Math.max(0, Rest.left(a));
+    el.textContent = fmtClock(Math.ceil(L - 0.05));
+    const b = $('#rtBtn'); if (b) b.textContent = r.st === 'run' ? 'Stop' : 'Start';
+    const bar = $('#rtBar'); if (bar) bar.style.width = clamp((1 - L / r.len) * 100, 0, 100) + '%';
+    const cb = $('#clkBtn'); if (cb) cb.textContent = Player.clk(a).run ? 'Stop clock' : 'Start clock';
+  },
+  card(a) {
+    const r = Rest.st(a);
+    return `<div class="card mb"><div class="grid2">
+      <div><div class="eyebrow">Whole session</div><div class="big num" id="clk" style="font-size:2rem">${fmtClock(Player.clkMs(a) / 1000)}</div><button class="sm sec mt" id="clkBtn" onclick="Player.clkToggle()">${Player.clk(a).run ? 'Stop clock' : 'Start clock'}</button></div>
+      <div><div class="eyebrow">Task timer · rest or hold</div><div class="big num" id="rt" style="font-size:2rem">${fmtClock(Rest.left(a))}</div><div class="row mt" style="gap:6px"><button class="sm" id="rtBtn" onclick="Rest.toggle()">${r.st === 'run' ? 'Stop' : 'Start'}</button><button class="sm sec" onclick="Rest.reset()">Reset</button></div></div></div>
+      <div class="bar mt"><i id="rtBar" style="width:0%"></i></div>
+      <div class="chips mt">${[30, 45, 60, 90, 120, 180].map(n => `<span class="chip ${r.len === n ? 'on' : ''}" onclick="Rest.setLen(${n})">${n < 60 ? n + ' sec' : n === 60 ? '1 min' : n === 90 ? '1½ min' : n / 60 + ' min'}</span>`).join('')}</div>
+      <div class="mute tiny mt">Starts by itself when you tick a set. Use a shorter time to count a plank or carry.</div>
+      <div class="chips mt"><span class="chip ${Sound.on() ? 'on' : ''}" onclick="Sound.toggle()">${Sound.on() ? '🔔 Sounds on' : '🔕 Sounds off'}</span></div></div>`;
+  }
+};
+setInterval(() => { try { Player.tick(); } catch (e) { console.warn(e); } }, 250);
 /* =========================================================
    PROGRESS
    ========================================================= */
@@ -3418,12 +4065,24 @@ const Library = {
         if (!list.length) return '';
         return `<h3 class="mt2 mb">${label}</h3><div class="list">${list.map(e => `<div class="item" onclick="Library.show('${e.id}')"><div class="figthumb">${Figure.svg('ex', e.id)}</div><div class="grow"><div class="title">${esc(e.n)}${mine.has(e.id) ? ' <span class="tag acc">in your plan</span>' : ''}</div><div class="sub">${e.equip.map(k => (EQUIP.find(x => x[0] === k) || [0, k === 'bw' ? 'Bodyweight' : k])[1]).join(' · ')}</div></div></div>`).join('')}</div>`;
       }).join('')}
-      ${MOB.some(m => !q || m.n.toLowerCase().includes(q)) ? '<h3 class="mt2 mb">Mobility</h3>' : ''}<div class="list">${MOB.filter(m => !q || m.n.toLowerCase().includes(q)).map(m => `<div class="item" onclick="Library.showMob('${m.id}')"><div class="figthumb">${Figure.svg('mob', m.id)}</div><div class="grow"><div class="title">${esc(m.n)}</div><div class="sub">${esc(m.cue)}</div></div></div>`).join('')}</div>
+      ${[['Stretching & mobility', m => !m.yoga && !m.needs.length], ['Yoga', m => m.yoga], ['Foam roller, massage gun & Bosu', m => m.needs.length]].map(([label, f]) => {
+        const list = MOB.filter(m => f(m) && (!q || m.n.toLowerCase().includes(q)));
+        return list.length ? `<h3 class="mt2 mb">${label}</h3><div class="list">${list.map(m => `<div class="item" onclick="Library.showMob('${m.id}')"><div class="figthumb">${Figure.svg('mob', m.id)}</div><div class="grow"><div class="title">${esc(m.n)}${(S.mobAvoid || []).includes(m.id) ? ' <span class="tag warn">not given</span>' : ''}</div><div class="sub">${esc(modeInfo(m).t)}${m.uni ? ' · each side' : ''}${m.trail ? ' · trail-friendly' : ''}</div></div></div>`).join('')}</div>` : '';
+      }).join('')}
       ${CARDIO.some(c => !q || c.n.toLowerCase().includes(q)) ? '<h3 class="mt2 mb">Cardio</h3>' : ''}<div class="list">${CARDIO.filter(c => !q || c.n.toLowerCase().includes(q)).map(c => `<div class="item"><div class="figthumb">${Figure.svg('cardio', c.id)}</div><div class="grow"><div class="title">${esc(c.n)}</div></div></div>`).join('')}</div>
       <div style="height:20px"></div>`;
   },
   show(id) { const e = EXMAP[id]; sheet(`<h3>${esc(e.n)}</h3><div class="figbox mt">${Figure.svg('ex', id)}</div><p class="mt">${esc(e.cue)}</p><p class="mute small">Loads: ${e.reg.length ? e.reg.map(r => (REGIONS.find(x => x[0] === r) || [0, r])[1]).join(', ') : 'low joint stress'}</p><button class="ghost" onclick="closeSheet()">Close</button>`); },
-  showMob(id) { const m = MOBMAP[id]; sheet(`<h3>${esc(m.n)}</h3><div class="figbox mt">${Figure.svg('mob', id)}</div><p class="mt">${esc(m.cue)}</p><button class="ghost" onclick="closeSheet()">Close</button>`); }
+  showMob(id) {
+    const m = MOBMAP[id], mi = modeInfo(m), avoided = (S.mobAvoid || []).includes(id);
+    const figs = m.uni ? `<div class="grid2 mt"><div><div class="figbox">${Figure.mob(id, 'L')}</div><div class="center small mt">${esc(sideLabel(m, 'L'))}</div></div><div><div class="figbox">${Figure.mob(id, 'R')}</div><div class="center small mt">${esc(sideLabel(m, 'R'))}</div></div></div>` : `<div class="figbox mt">${Figure.svg('mob', id)}</div>`;
+    sheet(`<h3>${esc(m.n)}</h3><div class="mt"><span class="modeTag ${m.mode}">${esc(mi.t)}</span></div>${figs}
+      <p class="mt"><b>${esc(mi.t)}.</b> ${esc(mi.d)}</p><p>${esc(m.cue)}</p>
+      ${m.uni ? '<p class="mute small">Done one side at a time: left first, then right straight after.</p>' : ''}
+      ${avoided ? `<button class="sec" onclick="Library.allowMob('${id}')">Let the app give me this again</button>` : ''}
+      <button class="ghost mt" onclick="closeSheet()">Close</button>`);
+  },
+  allowMob(id) { S.mobAvoid = (S.mobAvoid || []).filter(x => x !== id); save(); closeSheet(); toast(MOBMAP[id].n + ' can be picked again'); route(); }
 };
 
 const SC_STEPS = {
@@ -3615,7 +4274,7 @@ window.addEventListener('hashchange', route);
   if (load.failed) setTimeout(() => toast("Saved data couldn't be read, so the app started fresh. A copy was kept — import a backup to restore.", 7000), 600);
   if (!location.hash) location.hash = S.profile ? '#/today' : '#/onboard';
   route();
-  if (S.profile && S.program && S.program.week.some(w => w.day == null)) buildProgram();
+  if (S.profile && S.program && (S.program.week.some(w => w.day == null) || S.program.fmt !== 2)) { buildProgram(); route(); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && route._day && route._day !== todayStr() && !location.hash.startsWith('#/session')) route(); });
   window.addEventListener('storage', e => { if (e.key === KEY && !S.active) { S = load(); route(); } });
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persisted().then(p => { if (!p) navigator.storage.persist(); }).catch(() => { }); } catch (e) { }
