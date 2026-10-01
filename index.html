@@ -589,21 +589,21 @@ function availEquip(p) {
 }
 // equipment preference order per setting
 function equipRank(p) {
-  if (p.goal === 'strength') return ['bb', 'db', 'kb', 'machine', 'cable', 'bar', 'vest', 'band', 'bosu', 'ankle', 'bw'];
-  if (p.setting === 'gym') return ['db', 'bb', 'cable', 'machine', 'kb', 'bar', 'band', 'vest', 'bosu', 'ankle', 'bw'];
-  return ['db', 'kb', 'vest', 'bar', 'band', 'bosu', 'ankle', 'bench', 'bw'];
+  if (p.goal === 'strength') return ['bb', 'db', 'kb', 'machine', 'cable', 'bar', 'vest', 'band', 'bosu', 'ankle', 'bench', 'bw'];
+  if (p.setting === 'gym') return ['db', 'bb', 'cable', 'machine', 'kb', 'bar', 'band', 'vest', 'bosu', 'ankle', 'bench', 'bw'];
+  return ['db', 'bb', 'kb', 'vest', 'bar', 'band', 'cable', 'machine', 'bosu', 'ankle', 'bench', 'bw'];
 }
-function candidates(pattern, p, exclude, excludeRegions) {
+function candidates(pattern, p, exclude, excludeRegions, plain) {
   const avail = availEquip(p), rank = equipRank(p);
   return EX.filter(e => e.pat === pattern && !exclude.has(e.id)
       && e.equip.some(q => avail.has(q))
       && (e.needs || []).every(q => avail.has(q))
       && (!excludeRegions || !e.reg.some(r => excludeRegions.has(r))))
     .sort((a, b) => {
-      const ha = S.loads[a.id] || S.calib[a.id] ? 0 : 1, hb = S.loads[b.id] || S.calib[b.id] ? 0 : 1;
+      const ha = plain ? 0 : S.loads[a.id] || S.calib[a.id] ? 0 : 1, hb = plain ? 0 : S.loads[b.id] || S.calib[b.id] ? 0 : 1;
       if (ha !== hb) return ha - hb;
       const ra = Math.min(...a.equip.map(q => rank.indexOf(q) < 0 ? 99 : rank.indexOf(q))), rb = Math.min(...b.equip.map(q => rank.indexOf(q) < 0 ? 99 : rank.indexOf(q)));
-      return ra - rb;
+      return ra - rb || EX.indexOf(a) - EX.indexOf(b);
     });
 }
 function repRange(p, ex) {
@@ -616,21 +616,67 @@ function setsFor(p, ex) {
   if (p.goal === 'strength' && ex.big && p.minutes >= 60) return 4;
   return 3;
 }
-function buildStrength(type, p, dayIdx) {
+/* ---------- rotation ----------
+   Every ROT_WEEKS weeks the plan moves on to the next exercise for each movement,
+   so over time every exercise your gear allows gets its turn. Weights you've
+   lifted are remembered per exercise, so coming back to one picks up where you left off. */
+const ROT_WEEKS = 3;
+function rotStart() { if (!S.seen.rotStart) S.seen.rotStart = S.seen.onboardedAt || todayStr(); return S.seen.rotStart; }
+function rotBlock() { return Math.max(0, Math.floor(daysBetween(rotStart(), todayStr()) / (7 * ROT_WEEKS))); }
+function rotDaysLeft() { return 7 * ROT_WEEKS - (daysBetween(rotStart(), todayStr()) % (7 * ROT_WEEKS)); }
+function canDo(ex, p) { const avail = availEquip(p); return !!ex && ex.equip.some(q => avail.has(q)) && (ex.needs || []).every(q => avail.has(q)); }
+/* ROT: set by buildProgram while it builds a week — which block we're in and how often each thing appears */
+let ROT = null;
+function rotPick(pat, p, used) {
+  const all = candidates(pat, p, new Set(), null, true);
+  if (!all.length) return null;
+  const r = ROT || { patBase: {}, patOcc: {} };
+  const occ = r.patOcc[pat] = (r.patOcc[pat] || 0) + 1;
+  const start = (r.patBase[pat] || 0) + occ - 1;
+  for (let k = 0; k < all.length; k++) { const ex = all[(start + k) % all.length]; if (!used.has(ex.id)) return ex; }
+  return null;
+}
+/* which movements a day uses. Full-body days always get a lower-body, a push and a pull move,
+   and take turns through lunges, glutes, arms, shoulders, core and carries. Other days take turns
+   through their list when time only allows some of it. */
+const FB_GROUPS = { lower: ['squat', 'lunge', 'hinge', 'glute'], push: ['pushH', 'pushV'], pull: ['pullH', 'pullV'], extra: ['core', 'biceps', 'carry', 'triceps', 'rearDelt', 'shoulderAcc'] };
+function daySlots(type, p) {
   const pats = PATTERNS[type];
   const warm = p.goal === 'flex' ? 10 : 6;
   const cardioTail = type === 'H' ? Math.min(15, Math.round(p.minutes * 0.3)) : 0;
   // minutes per set (work + rest) is learned from your own ticks; 2.3 until there's data
   const perSet = clamp((S.pace && S.pace.minPerSet) || 2.3, 1.2, 5);
   const perEx = (p.minutes < 30 ? 2 : 3) * perSet + 0.6;
-  const slots = clamp(Math.floor((p.minutes - warm - cardioTail) / perEx), 2, pats.length);
-  const used = new Set(); const list = [];
-  for (let i = 0; i < pats.length && list.length < slots; i++) {
-    const pat = pats[i];
+  const n = clamp(Math.floor((p.minutes - warm - cardioTail) / perEx), 2, type === 'S' || type === 'H' ? 8 : pats.length);
+  const q = ROT || { block: 0, typeW: {}, typeOcc: {} };
+  const r = q.block * (q.typeW[type] || 1) + (q.typeOcc[type] || 0);
+  if (type === 'S' || type === 'H') {
+    const g = FB_GROUPS, out = [g.lower[r % 4], g.push[r % 2], g.pull[(r + (r >> 1)) % 2]];
+    if (n >= 4) out.push(g.lower[(r + 2) % 4]);
+    if (n >= 6) out.push(g.push[(r + 1) % 2], g.pull[(r + (r >> 1) + 1) % 2]);
+    for (let k = 0; out.length < n && k < g.extra.length; k++) out.push(g.extra[(r * Math.max(1, n - out.length) + k) % g.extra.length]);
+    return out.slice(0, n);
+  }
+  if (n >= pats.length) return pats.slice();
+  const off = (r * n) % pats.length, idx = [];
+  for (let j = 0; j < n; j++) idx.push((off + j) % pats.length);
+  return idx.sort((a, b) => a - b).map(k => pats[k]);
+}
+function buildStrength(type, p, dayIdx) {
+  const pats = PATTERNS[type];
+  const warm = p.goal === 'flex' ? 10 : 6;
+  const cardioTail = type === 'H' ? Math.min(15, Math.round(p.minutes * 0.3)) : 0;
+  const slotPats = daySlots(type, p);
+  if (ROT) ROT.typeOcc[type] = (ROT.typeOcc[type] || 0) + 1;
+  const used = new Set(), list = [], seenPat = {};
+  for (const pat of slotPats) {
+    const i = pat + '#' + (seenPat[pat] = (seenPat[pat] || 0) + 1);      // slot name, used to remember your swaps
     const swapKey = dayIdx + ':' + i;
     let ex = S.swaps[swapKey] ? EXMAP[S.swaps[swapKey]] : null;
-    if (!ex || used.has(ex.id)) { const c = candidates(pat, p, used); ex = c[0]; }
-    if (!ex) { const fb = PAT_FALLBACK[pat]; if (fb) { const c = candidates(fb, p, used); ex = c[0]; } }
+    if (ex && !canDo(ex, p)) { delete S.swaps[swapKey]; ex = null; }     // gear was removed: drop the swap
+    if (ex && used.has(ex.id)) ex = null;
+    if (!ex) ex = rotPick(pat, p, used);
+    if (!ex) { const fb = PAT_FALLBACK[pat]; if (fb) ex = rotPick(fb, p, used); }
     if (!ex) continue;
     used.add(ex.id);
     const [lo, hi] = repRange(p, ex);
@@ -694,13 +740,16 @@ function pickWarm(p, seed, secs, bad) {
 function cardioModes(p) {
   const avail = availEquip(p);
   let list = CARDIO.filter(c => c.equip.some(q => avail.has(q)));
+  if (list.some(c => c.id !== 'mtb')) list = list.filter(c => c.id !== 'mtb');
   const pref = p.goal === 'cardio' ? ['run', 'bike', 'row', 'tread', 'rope', 'ellip', 'circuit', 'walk'] : ['bike', 'tread', 'run', 'row', 'ellip', 'rope', 'circuit', 'walk'];
   if (p.cardioLevel === 'beg') pref.unshift('walk');
   return list.sort((a, b) => pref.indexOf(a.id) - pref.indexOf(b.id));
 }
 function buildCardio(type, p, dayIdx, minutesOverride) {
   const modes = cardioModes(p);
-  const mode = modes[dayIdx % Math.max(1, Math.min(modes.length, 2))] || modes[0];
+  let mode = modes[0];
+  if (ROT && modes.length) { const occ = ROT.cardioOcc = (ROT.cardioOcc || 0) + 1; mode = modes[(ROT.block * (ROT.cardioW || 1) + occ - 1) % modes.length]; }
+  else if (modes.length) mode = modes[dayIdx % modes.length];
   const mins = minutesOverride || p.minutes;
   const lvl = p.cardioLevel || 'beg';
   let phases = [], label = '';
@@ -752,6 +801,11 @@ function buildFlex(p, dayIdx, bad) {
   return { type: 'F', title: TYPE_INFO.F.title, kind: 'mobility', moves, steps, minutes: p.minutes, idx: dayIdx };
 }
 function buildOne(code, p, dayIdx, minutes) {
+  if (!ROT && S.profile) {
+    const codes = S.program && S.program.week ? S.program.week.map(w => w.type) : weekCodes(S.profile); ROT = rotCtx(S.profile, weekCodes(S.profile));
+    try { for (let k = 0; k < Math.min(dayIdx, codes.length); k++) buildOne(codes[k], S.profile, k, null); return buildOne(code, p, dayIdx, minutes); }
+    finally { ROT = null; }
+  }
   const pp = minutes ? Object.assign({}, p, { minutes }) : p;
   if (code === 'MTB') return buildRide(pp, dayIdx, minutes);
   const k = TYPE_INFO[code] ? TYPE_INFO[code].kind : 'strength';
@@ -768,23 +822,107 @@ function overrideOptions(p) {
   if (availEquip(p).has('mtb')) out.unshift({ code: 'MTB', title: TYPE_INFO.MTB.title, kind: 'ride' });
   return out;
 }
-function buildProgram() {
-  const p = S.profile; if (!p) return null;
-  const days = [...p.days].sort((a, b) => a - b);
-  const n = clamp(days.length, 1, 7);
-  let codes = SPLITS[p.goal][n];
-  const av = availEquip(p);
-  const bare = !['db', 'kb', 'bb', 'band', 'bar', 'cable', 'machine'].some(k => av.has(k));
-  if (bare && p.goal === 'strength' && n >= 6) codes = n === 6 ? ['S', 'U', 'L', 'S', 'U', 'L'] : ['S', 'U', 'L', 'C', 'S', 'U', 'L'];
-  const mtbDays = new Set(p.mtbDays || []);
-  const week = days.map((d, i) => {
-    let code = codes[i];
-    if (mtbDays.has(d) && availEquip(p).has('mtb')) code = 'MTB';
-    const s = buildOne(code, p, i, null);
-    s.day = d; s.idx = i;
-    return s;
+/* the day types for the week, in training-day order */
+/* ---------- balance: what kind of session each training day gets ----------
+   Each goal has a target share of strength (S), cardio (C) and flexibility (F).
+   Every training day picks the kind you're furthest behind on over the last two weeks,
+   counting what you actually did — swapped sessions, extra sessions and rides included. */
+const SHARES = { general: { S: 1 / 3, C: 1 / 3, F: 1 / 3 }, strength: { S: 0.6, C: 0.2, F: 0.2 }, cardio: { S: 0.2, C: 0.6, F: 0.2 }, flex: { S: 0.2, C: 0.2, F: 0.6 } };
+const CAT_ORDER = { general: ['S', 'C', 'F'], strength: ['S', 'C', 'F'], cardio: ['C', 'S', 'F'], flex: ['F', 'S', 'C'] };
+const BAL_DAYS = 14;
+/* look back far enough to see at least ~6 sessions: 2 weeks normally, longer if you train only 1–2 days a week */
+function balDays(p) { const n = clamp((p.days || []).length, 1, 7); return n >= 3 ? BAL_DAYS : 7 * Math.ceil(6 / n); }
+function catOfCode(c) { return c === 'F' ? 'F' : (c === 'C' || c === 'CL' || c === 'MTB') ? 'C' : 'S'; }
+function catOfRec(r) { return r.kind === 'mobility' ? 'F' : (r.kind === 'cardio' || r.kind === 'ride') ? 'C' : 'S'; }
+/* choose the kind for one day. hist: [{date, cat}] of everything before this day */
+function pickCat(p, date, hist) {
+  const sh = SHARES[p.goal] || SHARES.general, order = CAT_ORDER[p.goal] || CAT_ORDER.general;
+  const span = balDays(p), win = hist.filter(h => h.date < date && daysBetween(h.date, date) < span);
+  const N = win.length + 1, cnt = { S: 0, C: 0, F: 0 };
+  win.forEach(h => { cnt[h.cat]++; });
+  const last = win.length ? win.reduce((a, b) => (a.date >= b.date ? a : b)) : null;
+  const yday = last && daysBetween(last.date, date) === 1 ? last.cat : null;
+  let best = null;
+  order.forEach((c, k) => {
+    let sc = sh[c] * N - cnt[c] - k * 0.001;                 // how far behind; ties go to the goal's main kind
+    if (last && last.cat === c) sc -= 0.3;                   // try not to repeat the last session's kind
+    if (yday === 'S' && c === 'S') sc -= 0.6;                // and no strength two days running if there's another choice
+    if (!best || sc > best.sc) best = { c, sc };
   });
-  S.program = { id: uid(), createdAt: todayStr(), week, fmt: 2, version: (S.program ? S.program.version + 1 : 1) };
+  return best.c;
+}
+/* the day type (which kind of strength day, easy or interval cardio) for the nth session of a kind */
+function codeFor(cat, p, nth, nDays) {
+  const sh = SHARES[p.goal] || SHARES.general;
+  if (cat === 'F') return 'F';
+  if (cat === 'C') return sh.C * nDays >= 2 && nth % 3 === 2 ? 'CL' : 'C';
+  const perWeek = sh.S * nDays, av = availEquip(p);
+  const bare = !['db', 'kb', 'bb', 'band', 'bar', 'cable', 'machine'].some(k => av.has(k));
+  if (perWeek >= 3.5 && !bare) return ['PU', 'PL', 'LG'][nth % 3];
+  if (perWeek >= 2.4) return ['U', 'L'][nth % 2];
+  return 'S';
+}
+/* plan the codes for a run of training dates, starting from the history given */
+function projectCodes(p, dates, hist) {
+  const h = hist.slice(), mtb = new Set(p.mtbDays || []), hasMtb = availEquip(p).has('mtb'), nDays = clamp(p.days.length, 1, 7);
+  const nth = { S: 0, C: 0, F: 0 };
+  hist.forEach(x => { nth[x.cat]++; });
+  return dates.map(date => {
+    let code;
+    if (hasMtb && mtb.has(dparse(date).getDay())) code = 'MTB';
+    else { const cat = pickCat(p, date, h); code = codeFor(cat, p, nth[cat], nDays); }
+    const cat = catOfCode(code); nth[cat]++; h.push({ date, cat });
+    return code;
+  });
+}
+/* a typical week with no history — used to keep the exercise rotation steady */
+function weekCodes(p) {
+  const days = [...p.days].sort((a, b) => a - b), start = weekOf(rotStart());
+  return projectCodes(p, days.map(d => addDays(start, d)), []);
+}
+/* rotation context for this block: how often each day type, movement and cardio session comes up in a week */
+function rotCtx(p, dayCodes, blockOverride) {
+  const block = blockOverride != null ? blockOverride : rotBlock();
+  const r = { block, typeW: {}, typeOcc: {}, patW: {}, patOcc: {}, patBase: {}, cardioW: 0 };
+  dayCodes.forEach(c => { r.typeW[c] = (r.typeW[c] || 0) + 1; if (c === 'C' || c === 'CL' || c === 'H') r.cardioW++; });
+  const keep = ROT;
+  try {
+    // count every time each movement came up in earlier blocks, so each block carries on down the list where the last one stopped
+    for (let b = 0; b <= block; b++) {
+      const t = { block: b, typeW: r.typeW, typeOcc: {} }; ROT = t;
+      dayCodes.forEach(c => { if (!PATTERNS[c]) return; daySlots(c, p).forEach(pt => { if (b < block) r.patBase[pt] = (r.patBase[pt] || 0) + 1; else r.patW[pt] = (r.patW[pt] || 0) + 1; }); t.typeOcc[c] = (t.typeOcc[c] || 0) + 1; });
+    }
+  } finally { ROT = keep; }
+  return r;
+}
+function histCats() { return S.sessions.filter(x => x && x.date).map(x => ({ date: x.date, cat: catOfRec(x) })); }
+function progSig() { return todayStr() + '|' + S.sessions.length + '|' + (S.sessions.length ? S.sessions[S.sessions.length - 1].id : '') + '|' + rotBlock(); }
+/* this week's plan: days already past show what was planned then; today and later are projected
+   from what you've really done, so the plan re-balances after every session */
+function buildProgram(quiet) {
+  const p = S.profile; if (!p) return null;
+  const days = [...p.days].sort((a, b) => a - b), today = todayStr(), wk = weekOf(today);
+  const hist = histCats().filter(x => x.date < today);
+  const doneToday = S.sessions.filter(x => x.date === today);
+  const prevWeek = S.program && S.program.weekOf === wk ? S.program.week : null;
+  const future = days.map(d => addDays(wk, d)).filter(dt => dt >= today && !(dt === today && doneToday.length));
+  const proj = projectCodes(p, future, hist.concat(doneToday.map(x => ({ date: x.date, cat: catOfRec(x) }))));
+  // earlier days this week (only needed the first time a week is built): plan them as a run from the start of the week
+  const pastDates = days.map(d => addDays(wk, d)).filter(dt => dt < today);
+  const pastProj = projectCodes(p, pastDates, hist.filter(x => x.date < wk));
+  const dayCodes = days.map(d => {
+    const dt = addDays(wk, d);
+    if (dt === today && doneToday.length) { const t = doneToday[doneToday.length - 1].type; return TYPE_INFO[t] ? t : 'S'; }
+    if (dt < today) { const old = prevWeek && prevWeek.find(w => w.day === d); return old ? old.type : pastProj[pastDates.indexOf(dt)]; }
+    return proj[future.indexOf(dt)];
+  });
+  const block = rotBlock();
+  ROT = rotCtx(p, weekCodes(p));
+  let week;
+  try {
+    week = days.map((d, i) => { const s = buildOne(dayCodes[i], p, i, null); s.day = d; s.idx = i; return s; });
+  } finally { ROT = null; }
+  S.program = { id: uid(), createdAt: today, weekOf: wk, week, fmt: 3, block, sig: progSig(), version: (S.program ? S.program.version + (quiet ? 0 : 1) : 1) };
   save();
   return S.program;
 }
@@ -2548,6 +2686,8 @@ function a11y(root) {
 document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.onclick) { e.preventDefault(); e.target.click(); } });
 function route() {
   const hsh = location.hash || '#/today';
+  if (S.profile && S.program && S.program.fmt >= 2 && S.program.block != null && S.program.block !== rotBlock()) { S.swaps = {}; buildProgram(true); setTimeout(() => toast('New exercise rotation — fresh exercises for the next ' + ROT_WEEKS + ' weeks', 4000), 60); }
+  else if (S.profile && S.program && S.program.fmt === 3 && S.program.sig !== progSig() && !(S.active && S.active.stage && S.active.stage !== 'done')) buildProgram(true);
   document.body.dataset.goal = S.profile ? S.profile.goal : 'general';
   document.body.classList.toggle('calm', !!S.flags.calm);
   if (!S.profile && !hsh.startsWith('#/onboard') && !hsh.startsWith('#/invite')) { location.hash = '#/onboard'; return; }
@@ -2638,7 +2778,7 @@ const Onboard = {
         <div class="chips mt">${EQUIP.map(([k, l]) => `<span class="chip ${d.equipment.includes(k) ? 'on' : ''}" onclick="Onboard.tog('${k}')">${l}</span>`).join('')}</div>${nav(true)}</div>`;
     }
     if (st === 'goal') return h`<div class="fade">${prog}<h2>What's the goal?</h2><div class="stack mt">
-      ${[['general', 'General fitness', 'Balanced strength and cardio', '🌱'], ['cardio', 'Emphasis on cardio', 'Heart, lungs, endurance', '🔥'], ['strength', 'Emphasis on strength', 'Lift heavier, build muscle', '⚡'], ['flex', 'Emphasis on flexibility', 'Mobility first, strength alongside', '🌊']].map(([k, t, dd, ic]) => `<button class="optcard ${d.goal === k ? 'on' : ''}" onclick="OB.d.goal='${k}';document.body.dataset.goal='${k}';route()"><div class="ic">${ic}</div><div><div class="t">${t}</div><div class="d">${dd}</div></div></button>`).join('')}
+      ${[['general', 'General fitness', 'An even mix of strength, cardio and flexibility', '🌱'], ['cardio', 'Emphasis on cardio', 'Mostly cardio, plus some strength and stretching', '🔥'], ['strength', 'Emphasis on strength', 'Mostly strength, plus some cardio and stretching', '⚡'], ['flex', 'Emphasis on flexibility', 'Mostly mobility and yoga, plus some strength and cardio', '🌊']].map(([k, t, dd, ic]) => `<button class="optcard ${d.goal === k ? 'on' : ''}" onclick="OB.d.goal='${k}';document.body.dataset.goal='${k}';route()"><div class="ic">${ic}</div><div><div class="t">${t}</div><div class="d">${dd}</div></div></button>`).join('')}
       </div>${nav(!!d.goal)}</div>`;
     if (st === 'when') return h`<div class="fade">${prog}<h2>When can you train?</h2><p class="mute">Pick the days. Be honest — the plan adapts if you miss some, but it works best when it's realistic.</p>
       <div class="daybtns mt">${DAYS.map((n, i) => `<button class="${d.days.includes(i) ? 'on' : ''}" onclick="Onboard.togDay(${i})">${n}</button>`).join('')}</div>
@@ -2768,15 +2908,18 @@ const Plan = {
     const dow = new Date().getDay();
     return h`<div class="fade"><div class="topbar"><h1>Your week</h1><span class="pill">v${pr.version}</span></div>
       <div class="mute small mb">${['General fitness', 'Cardio emphasis', 'Strength emphasis', 'Flexibility emphasis'][['general', 'cardio', 'strength', 'flex'].indexOf(p.goal)]} · ${p.days.length} days · ${p.minutes} min · ${p.setting === 'gym' ? 'gym' : p.setting === 'home_eq' ? 'home with gear' : 'home, no gear'}</div>
+      ${Plan.balanceCard()}
       <div class="stack">${DAYS.map((n, d) => {
         const w = pr.week.find(x => x.day === d);
         const thisWeekDate = addDays(todayStr(), d - dow);
         const isDone = done.has(thisWeekDate);
         if (!w) return `<div class="item" style="opacity:.55"><div class="tag">${n}</div><div class="grow"><div class="title mute">Rest</div></div></div>`;
         const sub = w.kind === 'strength' ? w.exercises.map(e => EXMAP[e.exId].n).join(' · ') : w.kind === 'cardio' ? CARDIOMAP[w.cardio.modeId].n + ' · ' + w.cardio.label : w.kind === 'ride' ? 'Mountain bike · about ' + fmtMins(w.ride.minutes) + ' · plus stretching' : (w.moves || []).map(m => MOBMAP[m].n).join(' · ');
-        return `<div class="item ${d === dow ? 'glow' : ''}" style="${d === dow ? 'border-color:var(--acc)' : ''}"><div class="tag ${isDone ? 'good' : d === dow ? 'acc' : ''}">${n}</div><div class="grow"><div class="title">${esc(w.title)} ${isDone ? '✓' : ''}</div><div class="sub">${esc(sub)}</div></div><button class="icon" onclick="Plan.detail(${w.idx})">›</button></div>`;
+        const missed = !isDone && thisWeekDate < todayStr();
+        return `<div class="item ${d === dow ? 'glow' : ''}" style="${d === dow ? 'border-color:var(--acc)' : missed ? 'opacity:.5' : ''}"><div class="tag ${isDone ? 'good' : d === dow ? 'acc' : ''}">${n}</div><div class="grow"><div class="title">${esc(w.title)} ${isDone ? '✓' : missed ? '<span class="tag">missed</span>' : ''}</div><div class="sub">${esc(sub)}</div></div><button class="icon" onclick="Plan.detail(${w.idx})">›</button></div>`;
       }).join('')}</div>
       <div class="stack mt2"><button class="sec" onclick="Plan.regen()">Rebuild plan</button><button class="ghost" onclick="go('#/profile')">Change goal, days or gear</button></div>
+      <p class="mute tiny mt">Exercises rotate every ${ROT_WEEKS} weeks so everything your gear allows gets a turn. Next change in ${rotDaysLeft()} day${rotDaysLeft() === 1 ? '' : 's'}. Your weights are remembered for each exercise.</p>
       <p class="mute tiny mt">Rebuilding keeps your loads and history. Swapped exercises reset.</p></div>`;
   },
   detail(idx) {
@@ -2788,6 +2931,14 @@ const Plan = {
       <h3 class="mt2 mb">Before · about ${fmtMins(Math.max(1, Math.round(stepsSec(w.warmSteps || mkSteps(w.warmMob)) / 60)))}</h3>${Plan.moveList(w.warmMob)}<h3 class="mt2 mb">After · about ${fmtMins(Math.max(1, Math.round(stepsSec(w.coolSteps || mkSteps(w.coolMob)) / 60)))}</h3>${Plan.moveList(w.coolMob)}`;
     else body = `<div class="mute small mb">About ${fmtMins(Math.max(1, Math.round(stepsSec(w.steps || mkSteps(w.moves)) / 60)))} in total, including a few seconds to get ready between moves. One-sided moves are done left, then right.</div>${Plan.moveList(w.moves, w.steps)}`;
     sheet(`<h3>${esc(w.title)} · ${DAYSL[w.day]}</h3><div class="mt">${body}</div><div class="stack mt2"><button onclick="closeSheet();Session.start(${idx})">Start this session</button><button class="ghost" onclick="closeSheet()">Close</button></div>`);
+  },
+  /* how the last two weeks compare with the goal's mix */
+  balanceCard() {
+    const p = S.profile, sh = SHARES[p.goal] || SHARES.general, today = todayStr();
+    const span = balDays(p), win = histCats().filter(x => daysBetween(x.date, today) < span && x.date <= today), cnt = { S: 0, C: 0, F: 0 };
+    win.forEach(x => { cnt[x.cat]++; });
+    const pct = v => Math.round(v * 100) + '%', row = (c, l) => `<div class="between small"><span>${l}</span><span class="num">${cnt[c]} done · aim ${pct(sh[c])}</span></div><div class="bar mt" style="margin:4px 0 8px"><i style="width:${win.length ? cnt[c] / win.length * 100 : 0}%"></i></div>`;
+    return `<div class="card mb"><b>Your mix, last ${span === 14 ? '2 weeks' : span / 7 + ' weeks'}</b><div class="mute small mb">Each training day picks whatever you're most behind on, so the plan re-balances after every session — including swaps, extra sessions and rides.</div>${row('S', 'Strength')}${row('C', 'Cardio')}${row('F', 'Flexibility')}</div>`;
   },
   moveList(ids, steps) {
     const secOf = id => { const st = (steps || []).find(x => x.id === id); return st ? st.sec : mobSec(MOBMAP[id]); };
@@ -4002,7 +4153,7 @@ const ProfileEdit = {
       <div><label>Goal</label><div class="chips">${[['general', 'General'], ['cardio', 'Cardio'], ['strength', 'Strength'], ['flex', 'Flexibility']].map(([k, l]) => `<span class="chip ${p.goal === k ? 'on' : ''}" onclick="S.profile.goal='${k}';save();route()">${l}</span>`).join('')}</div></div>
       <div><label>Days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${p.days.includes(i) ? 'on' : ''}" onclick="ProfileEdit.togDay(${i})">${n}</button>`).join('')}</div></div>
       <div><label>Minutes</label><div class="chips">${[20, 30, 45, 60, 75].map(m => `<span class="chip ${p.minutes === m ? 'on' : ''}" onclick="S.profile.minutes=${m};save();route()">${m}</span>`).join('')}</div></div>
-      <div><label>Where</label><div class="chips">${[['gym', 'Gym'], ['home_eq', 'Home + gear'], ['home_none', 'Home + no gear']].map(([k, l]) => `<span class="chip ${p.setting === k ? 'on' : ''}" onclick="S.profile.setting='${k}';save();route()">${l}</span>`).join('')}</div></div>
+      <div><label>Where</label><div class="chips">${[['gym', 'Gym'], ['home_eq', 'Home + gear'], ['home_none', 'Home + no gear']].map(([k, l]) => `<span class="chip ${p.setting === k ? 'on' : ''}" onclick="ProfileEdit.setWhere('${k}')">${l}</span>`).join('')}</div></div>
       ${p.setting === 'home_none' ? `<div class="card" style="background:var(--bg2)"><b>Bodyweight only</b><div class="mute small">No equipment is used with this option. To add a dumbbell, band or bike, pick Home + gear.</div></div>` : `<div><label>Equipment</label><div class="chips">${EQUIP.map(([k, l]) => `<span class="chip ${p.equipment.includes(k) ? 'on' : ''}" onclick="ProfileEdit.togEq('${k}')">${l}</span>`).join('')}</div></div>`}
       ${p.setting !== 'home_none' && S.profile.equipment.includes('mtb') ? `<div><label>Usual ride days</label><div class="daybtns">${DAYS.map((n, i) => `<button class="${(p.mtbDays || []).includes(i) ? 'on' : ''}" onclick="ProfileEdit.togMtb(${i})" ${p.days.includes(i) ? '' : 'style="opacity:.4"'}>${n}</button>`).join('')}</div><div class="mute tiny mt">A ride day is the ride plus stretching. You can switch any day to a ride on the day itself.</div></div>
       <div><label>Typical ride length</label><div class="chips">${[45, 60, 90, 120, 180].map(m => `<span class="chip ${p.rideMinutes === m ? 'on' : ''}" onclick="S.profile.rideMinutes=${m};save();route()">${fmtMins(m)}</span>`).join('')}</div></div>` : ''}
@@ -4036,7 +4187,10 @@ const ProfileEdit = {
   snap() { const p = S.profile; return JSON.stringify([p.goal, p.days, p.minutes, p.setting, p.equipment, p.mtbDays, p.rideMinutes, p.cardioLevel]); },
   changed() { return ProfileEdit._snap != null && ProfileEdit._snap !== ProfileEdit.snap(); },
   togDay(i) { const d = S.profile.days; const j = d.indexOf(i); if (j > -1) { if (d.length === 1) { toast('Keep at least one day'); return; } d.splice(j, 1); if (S.profile.mtbDays) S.profile.mtbDays = S.profile.mtbDays.filter(x => x !== i); } else d.push(i); d.sort(); save(); route(); },
-  togEq(k) { const e = S.profile.equipment; const j = e.indexOf(k); if (j > -1) { e.splice(j, 1); if (k === 'mtb') S.profile.mtbDays = []; } else e.push(k); save(); route(); },
+  togEq(k) { const e = S.profile.equipment; const j = e.indexOf(k); const on = j < 0; if (!on) { e.splice(j, 1); if (k === 'mtb') S.profile.mtbDays = []; } else e.push(k); ProfileEdit.gearChanged((EQUIP.find(x => x[0] === k) || [0, k])[1] + (on ? ' added' : ' removed')); },
+  setWhere(k) { S.profile.setting = k; ProfileEdit.gearChanged(k === 'gym' ? 'Gym' : k === 'home_eq' ? 'Home + gear' : 'Home + no gear'); },
+  /* gear decides what can be in the plan, so rebuild it right away */
+  gearChanged(what) { buildProgram(); ProfileEdit._snap = ProfileEdit.snap(); save(); route(); toast(what + ' — plan updated'); },
   togMtb(i) { if (!S.profile.days.includes(i)) { toast('Make it a training day first'); return; } const d = S.profile.mtbDays = S.profile.mtbDays || []; const j = d.indexOf(i); if (j > -1) d.splice(j, 1); else d.push(i); save(); route(); },
   apply() { if (!S.profile.days.length) { toast('Pick at least one day'); return; } S.swaps = {}; buildProgram(); ProfileEdit._snap = ProfileEdit.snap(); toast('Plan rebuilt'); go('#/plan'); }
 };
@@ -4050,6 +4204,7 @@ const Library = {
     return h`<div class="fade"><div class="topbar"><button class="back" onclick="history.back()">‹</button><h2>Exercises</h2><span></span></div>
       <input type="search" placeholder="Search" aria-label="Search exercises" value="${esc(Library._q || '')}" oninput="Library.filter(this.value)">
       <p class="mute small mt">Every movement, animated. Tap one for the form cue.</p>
+      ${S.profile ? `<p class="mute small"><b>In your plan</b> means it's in this block. <b>In rotation</b> means your gear allows it, so it will take its turn. The plan moves on every ${ROT_WEEKS} weeks — next change in ${rotDaysLeft()} day${rotDaysLeft() === 1 ? '' : 's'}.</p>` : ''}
       <div id="libList">${Library.list()}</div></div>`;
   },
   filter(v) { Library._q = v; const el = $('#libList'); if (!el) return; el.innerHTML = Library.list(); a11y(el); Figure.mountAll(); },
@@ -4063,7 +4218,7 @@ const Library = {
     return h`${groups.map(([pat, label]) => {
         const list = EX.filter(e => e.pat === pat && match(e));
         if (!list.length) return '';
-        return `<h3 class="mt2 mb">${label}</h3><div class="list">${list.map(e => `<div class="item" onclick="Library.show('${e.id}')"><div class="figthumb">${Figure.svg('ex', e.id)}</div><div class="grow"><div class="title">${esc(e.n)}${mine.has(e.id) ? ' <span class="tag acc">in your plan</span>' : ''}</div><div class="sub">${e.equip.map(k => (EQUIP.find(x => x[0] === k) || [0, k === 'bw' ? 'Bodyweight' : k])[1]).join(' · ')}</div></div></div>`).join('')}</div>`;
+        return `<h3 class="mt2 mb">${label}</h3><div class="list">${list.map(e => `<div class="item" onclick="Library.show('${e.id}')"><div class="figthumb">${Figure.svg('ex', e.id)}</div><div class="grow"><div class="title">${esc(e.n)}${mine.has(e.id) ? ' <span class="tag acc">in your plan</span>' : S.profile && canDo(e, S.profile) ? ' <span class="tag">in rotation</span>' : ''}</div><div class="sub">${e.equip.map(k => (EQUIP.find(x => x[0] === k) || [0, k === 'bw' ? 'Bodyweight' : k])[1]).join(' · ')}</div></div></div>`).join('')}</div>`;
       }).join('')}
       ${[['Stretching & mobility', m => !m.yoga && !m.needs.length], ['Yoga', m => m.yoga], ['Foam roller, massage gun & Bosu', m => m.needs.length]].map(([label, f]) => {
         const list = MOB.filter(m => f(m) && (!q || m.n.toLowerCase().includes(q)));
@@ -4274,7 +4429,7 @@ window.addEventListener('hashchange', route);
   if (load.failed) setTimeout(() => toast("Saved data couldn't be read, so the app started fresh. A copy was kept — import a backup to restore.", 7000), 600);
   if (!location.hash) location.hash = S.profile ? '#/today' : '#/onboard';
   route();
-  if (S.profile && S.program && (S.program.week.some(w => w.day == null) || S.program.fmt !== 2)) { buildProgram(); route(); }
+  if (S.profile && S.program && (S.program.week.some(w => w.day == null) || S.program.fmt !== 3)) { buildProgram(); route(); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && route._day && route._day !== todayStr() && !location.hash.startsWith('#/session')) route(); });
   window.addEventListener('storage', e => { if (e.key === KEY && !S.active) { S = load(); route(); } });
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persisted().then(p => { if (!p) navigator.storage.persist(); }).catch(() => { }); } catch (e) { }
