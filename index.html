@@ -1145,18 +1145,60 @@ function proteinRange() {
    ========================================================= */
 const BASE = location.origin + location.pathname;
 const Bridge = {
+  /* Home Screen app? A link can never reopen it (iPhone always opens links in Safari,
+     which has separate data), so from there we run the shortcut without a return link,
+     and the reading comes back by copy and paste when you switch back. */
+  standalone() { return navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches); },
+  READS: ['readWeight', 'readiness'],
   run(slot, input, ctx) {
     const name = S.shortcuts[slot]; if (!name) { toast('No shortcut name set for ' + slot); return; }
-    S.pending = { slot, t: Date.now(), ctx: ctx || null, route: location.hash }; save();
-    let url = 'shortcuts://x-callback-url/run-shortcut?name=' + encodeURIComponent(name) +
-      '&x-success=' + encodeURIComponent(BASE) + '&x-cancel=' + encodeURIComponent(BASE) + '&x-error=' + encodeURIComponent(BASE);
-    if (input != null) url += '&input=text&text=' + encodeURIComponent(input);
+    const home = Bridge.standalone();
+    S.pending = { slot, t: Date.now(), ctx: ctx || null, route: location.hash, home }; save();
+    let url;
+    if (home) {
+      url = 'shortcuts://run-shortcut?name=' + encodeURIComponent(name);
+      if (Bridge.READS.includes(slot)) try { navigator.clipboard && navigator.clipboard.writeText && navigator.clipboard.writeText('').catch(() => { }); } catch (e) { }   // so an old copy isn't mistaken for the new reading
+    } else {
+      url = 'shortcuts://x-callback-url/run-shortcut?name=' + encodeURIComponent(name) +
+        '&x-success=' + encodeURIComponent(BASE) + '&x-cancel=' + encodeURIComponent(BASE) + '&x-error=' + encodeURIComponent(BASE);
+    }
+    if (input != null) url += (url.includes('?') ? '&' : '?') + 'input=text&text=' + encodeURIComponent(input);
     location.href = url;
   },
+  /* back in the Home Screen app after a shortcut ran */
+  back() {
+    const pend = S.pending;
+    if (!pend || !pend.home || $('.sheetBg.bridge')) return;
+    if (Date.now() - pend.t > 15 * 60000) { S.pending = null; save(); return; }
+    if (Date.now() - pend.t < 1200) return;                 // still on the way out to Shortcuts
+    const read = Bridge.READS.includes(pend.slot), title = SC_STEPS[pend.slot] ? SC_STEPS[pend.slot].title : 'Shortcut';
+    const bg = sheet(read
+      ? h`<h3>Back from Apple Health</h3><p class="small">Tap <b>Paste reading</b>. If your iPhone shows a small <b>Paste</b> bubble, tap it.</p>
+        <div class="stack mt"><button onclick="Bridge.paste()">Paste reading</button></div>
+        <p class="mute small mt">Or long-press the box below, tap <b>Paste</b>, then tap <b>Use this</b>.</p>
+        <textarea id="brPaste" rows="3" placeholder="Reading from Health"></textarea>
+        <div class="stack mt"><button class="sec" onclick="Bridge.useText($('#brPaste').value)">Use this</button><button class="ghost" onclick="Bridge.cancelBack()">Cancel</button></div>
+        <p class="mute tiny mt">Nothing to paste? Your <b>${esc(S.shortcuts[pend.slot])}</b> shortcut needs a <b>Copy to Clipboard</b> step. See More → Apple Health setup.</p>`
+      : h`<h3>Back from Shortcuts</h3><p class="small">Did <b>${esc(title)}</b> finish without an error?</p>
+        <div class="stack mt"><button onclick="Bridge.useText('')">Yes, it's saved in Health</button><button class="ghost" onclick="Bridge.cancelBack()">No, it didn't work</button></div>`);
+    bg.classList.add('bridge');
+  },
+  async paste() {
+    try { const t = await navigator.clipboard.readText(); if (t && t.trim()) { Bridge.useText(t); return; } toast('Nothing copied yet — check the shortcut has a Copy to Clipboard step', 4000); }
+    catch (e) { toast('Long-press the box and tap Paste instead', 3500); const b = $('#brPaste'); if (b) b.focus(); }
+  },
+  useText(t) {
+    const pend = S.pending; if (!pend) { closeSheet(); return; }
+    S.pending = null;
+    try { Bridge.handle({ slot: pend.slot, value: t || '', ctx: pend.ctx }); } catch (e) { console.error(e); toast('Could not read what Health sent back.'); }
+    save(); closeSheet(); route();
+  },
+  cancelBack() { S.pending = null; save(); closeSheet(); },
   // called once at startup
   receive() {
     const q = location.search; const pend = S.pending;
     if (!q && !pend) return null;
+    if (!q && pend && pend.home) return null;              // handled by Bridge.back() when you switch back
     S.pending = null;
     let value = null;
     if (q) {
@@ -2862,7 +2904,16 @@ const Today = {
     const wcard = h`<div class="card"><div class="eyebrow">Weight trend</div><div class="big num" style="font-size:1.8rem">${fmtWn(trendSeries().slice(-1)[0] ? trendSeries().slice(-1)[0].trend : curWeightKg())}<span class="mute small"> ${unitW()}</span></div><div class="mute small">${S.weights.length} weigh-ins</div><div class="row mt"><button class="sm sec" onclick="go('#/weigh')">Weigh in</button></div></div>`;
     const skipNote = skip.mode !== 'ok' ? h`<div class="card" style="border-color:color-mix(in srgb,var(--warn) 40%,transparent)"><b class="warn">${skip.mode === 'reset' ? 'Welcome back' : 'Missed a couple'}</b><div class="mute small">${skip.mode === 'reset' ? "It's been a while. Your next session restarts at 85% of previous loads. No penalty — just safer." : skip.missed + ' planned sessions missed. Your next session is eased back slightly so you can get moving again without a wall.'}</div></div>` : '';
     return h`<div class="fade"><div class="topbar"><div><div class="mute small">${greet}${p.name ? ', ' + esc(p.name) : ''}</div><h1>${niceDate(todayStr())}</h1></div><div class="pill">${DAYS[new Date().getDay()]}</div></div>
-      <div class="stack">${Today.resumeCard()}${hero}${swapLine}${Today.backupCard()}${Today.healthCard()}${lengthCard()}${skipNote}${readyCard}<div class="grid2">${streakCard}${wcard}</div></div></div>`;
+      <div class="stack">${Today.resumeCard()}${Today.clipCard()}${hero}${swapLine}${Today.backupCard()}${Today.healthCard()}${lengthCard()}${skipNote}${readyCard}<div class="grid2">${streakCard}${wcard}</div></div></div>`;
+  },
+  /* the read shortcuts need one extra step to work from the Home Screen app */
+  clipCard() {
+    if (!Bridge.standalone() || S.seen.clipFix || !(S.scBuilt.readiness || S.scBuilt.readWeight)) return '';
+    return h`<div class="card" style="border-color:var(--warn)"><b>One-time fix for Apple Health</b>
+      <div class="small mt">So readings come straight back into this app (instead of opening Safari), add one step to <b>WT Readiness</b> and <b>WT Read Weight</b>:</div>
+      <ol class="ol small"><li>Open the <b>Shortcuts</b> app and tap the <b>•••</b> on the shortcut.</li><li>Tap the search bar at the bottom, type <b>Copy to Clipboard</b>, and tap it.</li><li>Drag it so it sits just above <b>Stop and Output</b>. Tap <b>Done</b>.</li></ol>
+      <div class="mute small">After a shortcut runs, tap <b>◀</b> at the top-left of the screen, or swipe back to this app. Then tap <b>Paste reading</b>.</div>
+      <div class="row mt"><button class="sm" onclick="S.seen.clipFix=true;save();route()">Done</button></div></div>`;
   },
   healthCard() {
     if (SC_ORDER.some(k => S.scBuilt[k]) || S.seen.healthLater) return '';
@@ -4251,6 +4302,7 @@ const SC_STEPS = {
     'In the text box, insert the <b>Repeat Item</b> variable, tap it, choose <b>Start Date</b>. Tap it again → Date Format <b>Custom</b> → type <code>yyyy-MM-dd</code>',
     'Type a comma, then insert <b>Repeat Item</b> again and choose <b>Value</b>',
     'Below the repeat: Add Action → <b>Combine Text</b>, input <b>Repeat Results</b>, separator <b>New Lines</b>',
+    'Add Action → <b>Copy to Clipboard</b>, copying the <b>Combined Text</b>. (This is how the Home Screen app gets the reading.)',
     'Add Action → <b>Stop and Output</b>, output the <b>Combined Text</b>. Tap Done.'
   ], note: 'The simple version from testing (one Find Health Samples, limit 1, then Text and Stop and Output) also works — the app just asks you for the date each time.' },
   logStrength: { title: 'Log strength workout', why: 'Writes a finished session into Health.', mins: 5, steps: [
@@ -4276,6 +4328,7 @@ const SC_STEPS = {
     'Add Action → <b>Set Variable</b>. Tap <b>Variable Name</b> → type <code>HRV</code>',
     'Add the same three actions again for <b>Resting Heart Rate</b>. Name the variable <code>RHR</code>',
     'Add Action → <b>Text</b>. Type <code>hrv:</code> then tap <b>HRV</b> in the row above the keyboard. Type a space and <code>rhr:</code> then tap <b>RHR</b>',
+    'Add Action → <b>Copy to Clipboard</b>. It should say <b>Text</b>. (This is how the Home Screen app gets the reading.)',
     'Add Action → <b>Stop and Output</b>. It should say <b>Text</b>. Tap Done.'
   ], note: "If Health has no reading for one of them, that part comes back blank. That's fine — the app scores with what it gets. Sleep can be typed in the app." },
   logWeight: { title: 'Log weight', why: 'Writes a weigh-in from the app into Health.', mins: 2, steps: [
@@ -4418,6 +4471,8 @@ const Invite = {
    BOOT
    ========================================================= */
 window.addEventListener('hashchange', route);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(() => Bridge.back(), 350); });
+window.addEventListener('pageshow', () => setTimeout(() => Bridge.back(), 500));
 (function boot() {
   const r = Bridge.receive();
   if (r && r.slot) { if (r.slot === 'logWeight' || r.slot === 'readWeight') location.hash = '#/progress'; else if (r.slot === 'readiness') location.hash = '#/today'; }
