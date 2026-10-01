@@ -1066,14 +1066,14 @@ function stats(arr) { if (!arr.length) return null; const m = arr.reduce((a, b) 
 function scoreReadiness(today) {
   const hist = S.readiness.filter(r => r.date !== today.date).slice(-14);
   const parts = [];
-  if (today.hrv != null) { const st = stats(hist.map(r => r.hrv).filter(v => v != null)); if (st && hist.length >= 5) parts.push({ w: .4, z: clamp((today.hrv - st.m) / st.sd, -2, 2) / 2 }); }
-  if (today.rhr != null) { const st = stats(hist.map(r => r.rhr).filter(v => v != null)); if (st && hist.length >= 5) parts.push({ w: .3, z: -clamp((today.rhr - st.m) / st.sd, -2, 2) / 2 }); }
+  if (today.hrv != null) { const st = stats(hist.map(r => r.hrv).filter(v => v != null)); if (st && hist.length >= 4) parts.push({ w: .4, z: clamp((today.hrv - st.m) / st.sd, -2, 2) / 2 }); }
+  if (today.rhr != null) { const st = stats(hist.map(r => r.rhr).filter(v => v != null)); if (st && hist.length >= 4) parts.push({ w: .3, z: -clamp((today.rhr - st.m) / st.sd, -2, 2) / 2 }); }
   if (today.sleep != null) parts.push({ w: .3, z: clamp((today.sleep - 7.5) / 1.5, -1, 1) });
-  if (!parts.length) return { score: null, level: 'ok', baseline: hist.length };
+  if (!parts.length) return { score: null, level: 'ok', baseline: hist.length + 1 };
   const wsum = parts.reduce((a, p) => a + p.w, 0);
   const c = parts.reduce((a, p) => a + p.w * p.z, 0) / wsum;
   const score = Math.round(50 + c * 40);
-  return { score, level: c < -0.35 ? 'low' : c > 0.35 ? 'high' : 'ok', baseline: hist.length };
+  return { score, level: c < -0.35 ? 'low' : c > 0.35 ? 'high' : 'ok', baseline: hist.length + 1 };
 }
 
 /* ---------- weight trend & diet (tier 2) ---------- */
@@ -2898,7 +2898,7 @@ const Today = {
     const swapLine = (plan && !doneToday) ? h`<div class="row" style="justify-content:center"><button class="sm ghost" style="width:auto" onclick="Session.start(${plan.idx});setTimeout(Session.pickType,60)">Not today — do something else</button></div>` : '';
     const rl = r ? r.level : null;
     const rcol = rl === 'low' ? 'var(--warn)' : rl === 'high' ? 'var(--good)' : 'var(--acc)';
-    const readyCard = h`<div class="card"><div class="between"><div><div class="eyebrow">Readiness</div>${r ? `<h3>${rl === 'low' ? 'Take it easier today' : rl === 'high' ? 'Green light' : 'Ready to train'}</h3><div class="mute small">${r.hrv != null ? 'HRV ' + r.hrv + ' · ' : ''}${r.rhr != null ? 'RHR ' + r.rhr + ' · ' : ''}${r.sleep != null ? 'Sleep ' + r.sleep.toFixed(1) + 'h' : ''}${r.baseline < 5 ? '<br>Building your baseline (' + r.baseline + '/5 days)' : ''}</div>` : `<h3>Not checked yet</h3><div class="mute small">One tap pulls sleep, HRV and resting heart rate.</div>`}</div>${r && r.score != null ? Art.ring(r.score / 100, String(r.score), rl, rcol) : `<div style="width:140px;height:140px;display:flex;align-items:center;justify-content:center">${Art.ring(0, '—', '', 'var(--field)')}</div>`}</div>
+    const readyCard = h`<div class="card"><div class="between"><div><div class="eyebrow">Readiness</div>${r ? `<h3>${rl === 'low' ? 'Take it easier today' : rl === 'high' ? 'Green light' : 'Ready to train'}</h3><div class="mute small">${r.hrv != null ? 'HRV ' + r.hrv + ' · ' : ''}${r.rhr != null ? 'RHR ' + r.rhr + ' · ' : ''}${r.sleep != null ? 'Sleep ' + r.sleep.toFixed(1) + 'h' : ''}${Today.baseDays() < 5 ? '<br>Building your baseline (' + Today.baseDays() + '/5 days)' : ''}</div>` : `<h3>Not checked yet</h3><div class="mute small">One tap pulls sleep, HRV and resting heart rate.</div>`}</div>${r && r.score != null ? Art.ring(r.score / 100, String(r.score), rl, rcol) : `<div style="width:140px;height:140px;display:flex;align-items:center;justify-content:center">${Art.ring(0, '—', '', 'var(--field)')}</div>`}</div>
       <div class="row mt">${r ? `<button class="sm sec" onclick="Bridge.run('readiness')">Refresh</button>${rl !== 'ok' ? `<button class="sm ghost" onclick="Today.ignoreReady()">${r.ignored ? 'Apply suggestion' : 'Ignore today'}</button>` : ''}` : `<button class="sm" onclick="Bridge.run('readiness')">Check readiness</button><button class="sm sec" onclick="Today.manualReady()">Enter manually</button>`}</div></div>`;
     const streakCard = h`<div class="card"><div class="row"><div>${Art.flame(56, st >= 5)}</div><div><div class="big">${st}</div><div class="mute small">session streak</div></div></div></div>`;
     const wcard = h`<div class="card"><div class="eyebrow">Weight trend</div><div class="big num" style="font-size:1.8rem">${fmtWn(trendSeries().slice(-1)[0] ? trendSeries().slice(-1)[0].trend : curWeightKg())}<span class="mute small"> ${unitW()}</span></div><div class="mute small">${S.weights.length} weigh-ins</div><div class="row mt"><button class="sm sec" onclick="go('#/weigh')">Weigh in</button></div></div>`;
@@ -2933,6 +2933,7 @@ const Today = {
       <div class="mute small">${prog ? 'Your progress so far is kept.' : 'Nothing logged yet.'}</div>
       <div class="row mt"><button class="sm" onclick="go('#/session')">Resume</button>${prog ? `<button class="sm sec" onclick="Session.saveWhatsDone()">Save what I did</button>` : ''}<button class="sm ghost" onclick="Session.abandon()">Discard</button></div></div>`;
   },
+  baseDays() { return Math.min(5, S.readiness.filter(x => x.date <= todayStr() && (x.hrv != null || x.rhr != null)).slice(-14).length); },
   ignoreReady() { const r = S.readiness.find(x => x.date === todayStr()); if (r) { r.ignored = !r.ignored; save(); route(); } },
   manualReady() {
     sheet(h`<h3>How did you sleep?</h3><p class="mute small">If you don't have a ring or watch feeding Health, enter what you know. Leave blanks empty.</p>
