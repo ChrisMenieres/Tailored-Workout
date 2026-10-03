@@ -435,6 +435,8 @@ const EX = [
   { id: 'hkr', n: 'Hanging Knee Raise', pat: 'core', equip: ['bar'], reg: ['shoulder'], bwOnly: true, cue: 'No swinging. Curl the pelvis up.' },
   { id: 'sideplank', uni: true, n: 'Side Plank', pat: 'core', equip: ['bw'], reg: ['shoulder'], bwOnly: true, timed: true, cue: 'Straight line from head to heels. Both sides.' },
   { id: 'birddog', n: 'Bird Dog', pat: 'core', equip: ['bw'], reg: [], bwOnly: true, cue: 'Reach long, stay level. Slow.' },
+  { id: 'abroll', n: 'Ab Wheel Rollout', pat: 'core', equip: ['abwheel', 'bb'], reg: ['lowback', 'shoulder'], bwOnly: true, cue: 'Kneel with your hands on the ab wheel (or a barbell with round plates). Brace, keep your hips in line, and roll forward only as far as you can without your lower back sagging. Pull back with your abs.' },
+  { id: 'curlup', n: 'McGill Curl-up', pat: 'core', equip: ['bw'], reg: ['neck'], bwOnly: true, cue: 'On your back, one knee bent, the other leg straight, hands flat under your lower back. Lift your head and shoulders just a few inches, keeping your neck still. Hold for 8–10 seconds, then lower.' },
   { id: 'cabcrunch', n: 'Cable Crunch', pat: 'core', equip: ['cable'], reg: ['neck'], cue: 'Kneel. Curl the spine, elbows to knees.' },
   // carry
   { id: 'farmer', n: 'Farmer Carry', pat: 'carry', equip: ['db', 'kb'], reg: ['wrist'], timed: true, cue: 'Heavy weight in each hand. Walk tall for distance or time.' },
@@ -550,7 +552,7 @@ function sideLabel(m, side) { return side ? (side === 'L' ? 'Left ' : 'Right ') 
 
 const REGIONS = [['neck', 'Neck'], ['shoulder', 'Shoulder'], ['elbow', 'Elbow'], ['wrist', 'Wrist / hand'], ['lowback', 'Lower back'], ['hip', 'Hip'], ['knee', 'Knee'], ['ankle', 'Ankle / foot']];
 const EQUIP = [['db', 'Dumbbells'], ['kb', 'Kettlebell'], ['bb', 'Barbell & plates'], ['band', 'Resistance bands'], ['bar', 'Pull-up bar'], ['bench', 'Bench or box'], ['cable', 'Cable machine'], ['machine', 'Weight machines'],
-  ['vest', 'Weighted vest'], ['bosu', 'Bosu ball'], ['ankle', 'Ankle weights'], ['foam', 'Foam roller'], ['massage', 'Massage gun / device'],
+  ['vest', 'Weighted vest'], ['bosu', 'Bosu ball'], ['abwheel', 'Ab wheel'], ['ankle', 'Ankle weights'], ['foam', 'Foam roller'], ['massage', 'Massage gun / device'],
   ['treadmill', 'Treadmill'], ['bike', 'Stationary bike'], ['mtb', 'Mountain bike'], ['rower', 'Rower'], ['elliptical', 'Elliptical'], ['rope', 'Jump rope']];
 /* =========================================================
    PROGRAM ENGINE
@@ -583,15 +585,15 @@ const TYPE_INFO = {
 function availEquip(p) {
   const set = new Set(['bw', 'outdoor']);
   if (p.setting === 'home_none') return set;   // "Home + no gear" is bodyweight only, whatever is ticked
-  if (p.setting === 'gym') ['db', 'kb', 'bb', 'band', 'bar', 'bench', 'cable', 'machine', 'treadmill', 'bike', 'rower', 'elliptical', 'rope', 'foam', 'bosu'].forEach(k => set.add(k));  // a gym does not give you a mountain bike (or a vest, ankle weights or a massage gun)
+  if (p.setting === 'gym') ['db', 'kb', 'bb', 'band', 'bar', 'bench', 'cable', 'machine', 'treadmill', 'bike', 'rower', 'elliptical', 'rope', 'foam', 'bosu', 'abwheel'].forEach(k => set.add(k));  // a gym does not give you a mountain bike (or a vest, ankle weights or a massage gun)
   (p.equipment || []).forEach(k => set.add(k));
   return set;
 }
 // equipment preference order per setting
 function equipRank(p) {
-  if (p.goal === 'strength') return ['bb', 'db', 'kb', 'machine', 'cable', 'bar', 'vest', 'band', 'bosu', 'ankle', 'bench', 'bw'];
-  if (p.setting === 'gym') return ['db', 'bb', 'cable', 'machine', 'kb', 'bar', 'band', 'vest', 'bosu', 'ankle', 'bench', 'bw'];
-  return ['db', 'bb', 'kb', 'vest', 'bar', 'band', 'cable', 'machine', 'bosu', 'ankle', 'bench', 'bw'];
+  if (p.goal === 'strength') return ['bb', 'db', 'kb', 'machine', 'cable', 'bar', 'vest', 'abwheel', 'band', 'bosu', 'ankle', 'bench', 'bw'];
+  if (p.setting === 'gym') return ['db', 'bb', 'cable', 'machine', 'kb', 'bar', 'band', 'abwheel', 'vest', 'bosu', 'ankle', 'bench', 'bw'];
+  return ['db', 'bb', 'kb', 'vest', 'bar', 'abwheel', 'band', 'cable', 'machine', 'bosu', 'ankle', 'bench', 'bw'];
 }
 function candidates(pattern, p, exclude, excludeRegions, plain) {
   const avail = availEquip(p), rank = equipRank(p);
@@ -2263,6 +2265,15 @@ Object.assign(ANIM, {
     FV({ th: 90, sh: 90, th2: 92, sh2: 92, ft2: 170, ua: 50, fa: 140, ua2: 130, fa2: 40 }),
     FV({ th: 90, sh: 90, th2: 128, sh2: 128, ft2: 160, ua: 50, fa: 140, ua2: 130, fa2: 40 })] }
 });
+Object.assign(ANIM, {
+  abRollout: { prop: 'none', wheel: true, speed: 1500, frames: [
+    W({ px: 80, py: 140, tor: -30, nek: -10, H: [118, 168], H2: [115, 168], F: [48, 172], ft: 176, ft2: 176 }),
+    W({ px: 98, py: 155, tor: -4, nek: 4, H: [180, 168], H2: [177, 168], F: [48, 172], ft: 176, ft2: 176 })] },
+  curlUp: { prop: 'none', speed: 1600, frames: [
+    W(Object.assign({}, LYING_UP, { H: [92, 171], H2: [89, 171], F: [138, 174], th2: 2, sh2: 2, ft2: -80 })),
+    W(Object.assign({}, LYING_UP, { tor: -165, nek: -160, H: [92, 171], H2: [89, 171], F: [138, 174], th2: 2, sh2: 2, ft2: -80 }))] }
+});
+EXANIM.abroll = 'abRollout'; EXANIM.curlup = 'curlUp';
 /* weighted-vest and Bosu versions of existing moves */
 ANIM.squatVest = cp('squat', { over: 'vest' });
 ANIM.pushVest = cp('pushup', { over: 'vest' });
@@ -2574,6 +2585,10 @@ function figSvgInk(s, a) {
 function gearUnder(a, s) {
   let out = '';
   if (a.roller) { const [x, y] = a.roller; out += `<circle cx="${x}" cy="${y}" r="7.5" fill="#6a7089"/><circle cx="${x}" cy="${y}" r="7.5" fill="none" stroke="#8c93ab" stroke-width="1.5"/><circle cx="${x}" cy="${y}" r="2.2" fill="#3a4058"/>`; }
+  if (a.wheel) {
+    const c = [(s.han[0] + s.han2[0]) / 2, (s.han[1] + s.han2[1]) / 2];
+    out += `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="8" fill="#3a4058" stroke="#8c93ab" stroke-width="2"/><circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="2.5" fill="#8c93ab"/>`;
+  }
   if (a.dome) {
     let cx;
     if (a.dome === 'hands') cx = (s.han[0] + s.han2[0]) / 2;
